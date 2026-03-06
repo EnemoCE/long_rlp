@@ -122,6 +122,7 @@ exec > >(tee -a "${LOGS_DIR}/train_$(date +%F_%H-%M-%S).out") 2>&1
 : "${RAY_IP:=localhost}"
 export RAY_ADDRESS=${RAY_ADDRESS:-"http://${RAY_IP}:8265"}
 export VERL_FILE_LOGGER_ROOT=${VERL_FILE_LOGGER_ROOT:-${LOGS_DIR}}
+export GRADIO_SERVER_PORT="${GRADIO_SERVER_PORT:-7871}"
 SENTINEL="$CKPTS_DIR/.cleaner.run"
 
 # robust, nounset-proof cleaner
