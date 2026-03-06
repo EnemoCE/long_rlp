@@ -9,6 +9,12 @@
 **/playground
 **/wandb
 
+#heavy files
+*.pdf
+
+#agent files
+AGENTS.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
