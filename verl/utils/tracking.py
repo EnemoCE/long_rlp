@@ -157,10 +157,17 @@ class Tracking:
         if "file" in default_backend:
             self.logger["file"] = FileLogger(project_name, experiment_name)
 
+    # def log(self, data, step, backend=None):
+    #     for default_backend, logger_instance in self.logger.items():
+    #         if backend is None or default_backend in backend:
+    #             logger_instance.log(data=data, step=step)
     def log(self, data, step, backend=None):
         for default_backend, logger_instance in self.logger.items():
             if backend is None or default_backend in backend:
-                logger_instance.log(data=data, step=step)
+                if "trackio" in default_backend:
+                    logger_instance.log(metrics=data, step=step)
+                else:
+                    logger_instance.log(data=data, step=step)
 
     def __del__(self):
         if "wandb" in self.logger:
