@@ -44,7 +44,7 @@ export HYDRA_FULL_ERROR=1
 echo "Using $NNODES nodes for training..."
 
 # ------------------------------------- Setup xp params ---------------------------------------
-project_name='RL-Custom-GSPO'
+project_name='Long-RLP'
 
 adv_estimator=rloo
 reward_manager=dapo
@@ -102,7 +102,7 @@ exp_name="${loss_mode}-epslow-${clip_ratio_low}-epshigh-${clip_ratio_high}-${SFT
 #CKPTS_DIR=/rl/checkpoints/experimental/4b/${loss_mode}/${exp_name}
 REPO_ROOT="${HOME}/verl"
 DATA_DIR="${REPO_ROOT}/data/gsm8k"
-CKPTS_DIR=${CKPTS_DIR:-${REPO_ROOT}/ckpts/RL-Custom-GSPO_${exp_number}}
+CKPTS_DIR=${CKPTS_DIR:-${REPO_ROOT}/ckpts/RL-Long-RLP_${exp_number}}
 WORKING_DIR=${WORKING_DIR:-"${REPO_ROOT}"}
 LOGS_DIR=${REPO_ROOT}/logs_${exp_number}
 RUNTIME_ENV=${RUNTIME_ENV:-"${REPO_ROOT}/verl/trainer/runtime_env.yaml"}

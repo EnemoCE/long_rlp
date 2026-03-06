@@ -11,6 +11,7 @@
 
 #heavy files
 *.pdf
+ckpts
 
 #agent files
 AGENTS.md
