@@ -30,13 +30,16 @@ def build_dataset_element(problem: str, sol_prefix: str, instruction: str, targe
 
 def main():
     JSONL_PATH = os.path.join('Omni-MATH', "dataset_with_solution_sentences.jsonl")
+    TAKE_N = int(os.environ.get("TAKE_N", "100"))
+    MODEL_ID = "Qwen/Qwen3-1.7b"
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model_name", type=str, required=False)  # tokenizer source
+    ap.add_argument("--model_name", type=str, default=MODEL_ID)  # tokenizer source
     ap.add_argument("--out_dir", type=str, default='Omni-MATH')
     ap.add_argument("--offset", type=int, default=16)
     ap.add_argument("--k", type=int, default=1)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--train_ratio", type=float, default=0.954833)
+    #optimal train and test ratio estimated from RPT paper
     ap.add_argument("--max_tasks", type=int, default=1000000)
     ap.add_argument("--target", choices=["token", "sentence", "full_sentence"], default="token")
     args = ap.parse_args()
@@ -56,8 +59,7 @@ def main():
         print(f"Saved tokenizer to {save_dir}")
     else:
         print(f"Tokenizer files already present in {save_dir}, skipping download.")
-
-    tok = AutoTokenizer.from_pretrained("./tokenizers/Qwen/Qwen3-1.7b", use_fast=True)
+        tok = AutoTokenizer.from_pretrained(f"./tokenizers/{model_id}", use_fast=True)
 
     ds = load_dataset("parquet", data_files="./dataset/Omni-MATH_final/dataset_with_solution_sentences.parquet", split="train") # typically only one split
     if hasattr(ds,'keys'):
@@ -66,7 +68,7 @@ def main():
     else:
         base=ds
 
-    if args.target == "sentence":
+    if args.target == "full_sentence":
         prediction = "sentence"
     elif args.k == 1:
         prediction = "token"
@@ -119,10 +121,10 @@ def main():
                         extra_info['k'] = len(pre_target_ids)
                 extra_info["t"] = i
                 rows.append(build_dataset_element(problem, sol_prefix, instruction, target, difficulty, extra_info))
-            
+
     #print(rows[0:5])
     task_ds = Dataset.from_list(rows[:args.max_tasks])
-    task_ds = task_ds.select(range(10))
+    task_ds = task_ds.select(range(TAKE_N))
     """
     for ele in task_ds:
         for key, value in ele.items():
