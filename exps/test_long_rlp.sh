@@ -1,4 +1,4 @@
- #!/usr/bin/env bash
+#!/usr/bin/env bash
 #SBATCH --job-name=rl-gspo-3B
 #SBATCH --partition=main
 #SBATCH --nodes=1                # Number of nodes
@@ -50,7 +50,8 @@ adv_estimator=rloo
 reward_manager=dapo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
-MODEL_PATH=Qwen/Qwen2.5-0.5B-Instruct
+#MODEL_PATH=Qwen/Qwen2.5-0.5B-Instruct
+MODEL_PATH=Qwen/Qwen3-1.7b
 offload=false # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
 rollout_mode=sync # can be async to speedup large scale xps
@@ -71,10 +72,10 @@ kl_loss_coef=0.0
 
 clip_ratio_low=0.0003 # as recommended by the paper, see Sec. 5.1
 clip_ratio_high=0.0004 # as recommended by the paper, see Sec. 5.1
-train_batch_size=256
-ppo_mini_batch_size=120 # divisible by rollout.n=6 for stable in-actor RLOO grouping
-ppo_micro_batch_size_per_gpu=16 # setup depending on your GPU memory
-n_resp_per_prompt=6
+train_batch_size=300
+ppo_mini_batch_size=100 # divisible by rollout.n=6 for stable in-actor RLOO grouping
+ppo_micro_batch_size_per_gpu=10 # setup depending on your GPU memory
+n_resp_per_prompt=10
 
 # 1024 * 8 and 1024 * 2 before
 max_prompt_length=1024
@@ -100,8 +101,10 @@ exp_number=3
 SFT_MODEL=$(basename $MODEL_PATH)
 exp_name="${loss_mode}-epslow-${clip_ratio_low}-epshigh-${clip_ratio_high}-${SFT_MODEL}-RL-${exp_number}"
 #CKPTS_DIR=/rl/checkpoints/experimental/4b/${loss_mode}/${exp_name}
-REPO_ROOT="${HOME}/verl"
-DATA_DIR="${REPO_ROOT}/data/gsm8k"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+DATA_DIR=${DATA_DIR:-"${REPO_ROOT}/exps/dataset/Omni-MATH"}
+DATA_PREP_SCRIPT="${REPO_ROOT}/exps/prepare_omni_math_dataset.sh"
 CKPTS_DIR=${CKPTS_DIR:-${REPO_ROOT}/ckpts/RL-Long-RLP_${exp_number}}
 WORKING_DIR=${WORKING_DIR:-"${REPO_ROOT}"}
 LOGS_DIR=${REPO_ROOT}/logs_${exp_number}
@@ -177,23 +180,25 @@ val_top_p=0.7
 # Performance Related Parameter
 sp_size=1
 use_dynamic_bsz=false
-actor_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 2*8))
-infer_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 3*8))
+actor_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 2*5))
+infer_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 3*5))
 #offload=true
 gen_tp=1
 entropy_checkpointing=true # This enables entropy recomputation specifically for the entropy calculation, lowering memory usage during training.
 
 # ------------------------------------- train/val data preparation ---------------------------------------
 if [ "$first_time_dataset_prep" = true ]; then
-    echo "Preprocessing GSM8K dataset..."
-    python "${REPO_ROOT}/examples/data_preprocess/gsm8k.py" --local_save_dir "$DATA_DIR"
+    echo "Preprocessing Omni-MATH dataset..."
+    bash "${DATA_PREP_SCRIPT}"
 fi
 
-python "${REPO_ROOT}/exps/jinja_template_in_config.py" --jinja "jinja/rpt_template.jinja"
+python "${REPO_ROOT}/exps/jinja_template_in_config.py" \
+    --yaml "${REPO_ROOT}/exps/config/rpt_trainer.yaml" \
+    --jinja "${REPO_ROOT}/exps/jinja/rpt_template.jinja"
 
 
-gsm8k_train_path=${REPO_ROOT}/data/gsm8k/train.parquet
-gsm8k_test_path=${REPO_ROOT}/data/gsm8k/test.parquet
+omni_math_train_path="${DATA_DIR}/train.parquet"
+omni_math_test_path="${DATA_DIR}/test.parquet"
 
 #TEMPLATE_PATH="${HOME}/verl/exps/custom_template.jinja"
 
@@ -203,8 +208,8 @@ gsm8k_test_path=${REPO_ROOT}/data/gsm8k/test.parquet
 
 
 # set the paths
-train_files="['$gsm8k_train_path']"
-test_files="['$gsm8k_test_path']"
+train_files="['$omni_math_train_path']"
+test_files="['$omni_math_test_path']"
 
 : > "$SENTINEL"                 # 1) create sentinel
 clean_loop & CLEAN_PID=$!    # 2) launch cleaner in background

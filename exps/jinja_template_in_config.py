@@ -17,7 +17,7 @@ def write_text(path: Path, text: str) -> None:
 
 
 def find_default_jinja() -> Path:
-    exact = Path("jinja/custom_template.jinja")
+    exact = Path("jinja/rpt_template.jinja")
     if exact.exists():
         return exact
 

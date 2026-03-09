@@ -129,7 +129,13 @@ ENV/
 
 # data
 *.parquet
+.hf-cache/
+.uv-cache/
+exps/Omni-MATH/
+exps/dataset/Omni-MATH_final/
 
+#models
+exps/tokenizers/
 
 # local logs
 logs
