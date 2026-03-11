@@ -60,7 +60,7 @@ rollout_engine=vllm
 rollout_mode=sync # can be async to speedup large scale xps
 gpu_memory_utilization=0.8
 shuffle_dataset=true
-first_time_dataset_prep=true # prepare dataset
+first_time_dataset_prep=false # prepare dataset
 
 test_freq=10
 save_freq=10
