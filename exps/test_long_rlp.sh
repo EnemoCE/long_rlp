@@ -333,8 +333,8 @@ ray job submit --no-wait --submission-id "$JOB_ID" --runtime-env="${RUNTIME_ENV}
     trainer.default_local_dir="${CKPTS_DIR}" \
     trainer.resume_mode=auto \
     trainer.log_val_generations=2 \
-    +actor_rollout_ref.rpt.ema_tau=0.999 \
-    +actor_rollout_ref.rpt.length_penalty=0.0 \
+    actor_rollout_ref.rpt.ema_tau=0.999 \
+    actor_rollout_ref.rpt.length_penalty=0.0 \
     $@
 
 # blocks until the job finishes
