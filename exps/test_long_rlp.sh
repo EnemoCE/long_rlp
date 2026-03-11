@@ -144,7 +144,7 @@ DATA_PREP_SCRIPT="${REPO_ROOT}/exps/data_preprocessing/prepare_omni_math_dataset
 CKPTS_DIR=${CKPTS_DIR:-${REPO_ROOT}/ckpts/RL-Long-RLP_${exp_number}}
 WORKING_DIR=${WORKING_DIR:-"${REPO_ROOT}"}
 LOGS_DIR=${REPO_ROOT}/logs_${exp_number}
-RUNTIME_ENV=${RUNTIME_ENV:-"${REPO_ROOT}/verl/trainer/runtime_env.yaml"}
+RUNTIME_ENV=${RUNTIME_ENV:-"${REPO_ROOT}/exps/config/rpt_runtime_env.yaml"}
 mkdir -p "$DATA_DIR" "$CKPTS_DIR" "$LOGS_DIR"
 KEEP_LAST=2
 PERIOD_SEC=60

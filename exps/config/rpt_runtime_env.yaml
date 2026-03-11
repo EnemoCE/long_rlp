@@ -1,0 +1,12 @@
+working_dir: ./
+excludes:
+  - "/.git/"
+  - "/logs_1/"
+  - "/ckpts/"
+  - "/exps/dataset/"
+  - "/exps/data_preprocessing/.env"
+  - "/.hf-cache/"
+  - "/tokenizers/"
+env_vars:
+  TORCH_NCCL_AVOID_RECORD_STREAMS: "1"
+  CUDA_DEVICE_MAX_CONNECTIONS: "1"
