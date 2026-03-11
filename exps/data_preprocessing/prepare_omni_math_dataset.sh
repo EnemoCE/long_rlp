@@ -18,7 +18,7 @@ export HF_HOME="${HF_HOME:-${REPO_ROOT}/.hf-cache}"
 cd "${SCRIPT_DIR}"
 
 echo "Running spaCy sentence splitting for Omni-MATH..."
-#python spacy_parse_solutions.py --OUT_DIR "$INTERMEDIATE_DIR"
+python spacy_parse_solutions.py --OUT_DIR "$INTERMEDIATE_DIR"
 
 echo "Building Omni-MATH train/test parquet files..."
 python omni_math_processing.py --target full_sentence --model_name "${MODEL_PATH}" --input_dir "$INTERMEDIATE_DIR" --out_dir "$DATA_DIR" --jsonl_dir "$JSONL_DIR"

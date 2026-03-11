@@ -13,6 +13,9 @@
 
 set -xeuo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+
 # activate the venv
 #echo "Activating verl environment..."
 #eval "$(conda shell.bash hook)"
@@ -54,10 +57,10 @@ loss_agg_mode="seq-mean-token-mean"
 MODEL_PATH=Qwen/Qwen3-1.7b
 offload=false # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
-rollout_mode=sync # can be async to speedup large scale xps
+rollout_mode=async
 gpu_memory_utilization=0.8
 shuffle_dataset=true
-first_time_dataset_prep=true # prepare dataset
+first_time_dataset_prep=false # prepare dataset
 
 test_freq=10
 save_freq=10
@@ -94,7 +97,7 @@ BATCH_ACCUM="${BATCH_ACCUM:-1}"
 #   peak_memory_tbi_mb
 #   num_hidden_layers_in_pp
 source <(
-  python calc_nanotron_memory.py \
+  python "${REPO_ROOT}/exps/scripts/calc_nanotron_memory.py" \
     --model_name "${MODEL_PATH}" \
     --seq_len "${context_len}" \
     --mbs 1 \
@@ -119,7 +122,7 @@ PER_RANK_MAX_MEMORY=80000
 scale_factor=$(((PER_RANK_MAX_MEMORY*9/10-one_batch_static_memory_mb)/one_batch_dynamic_memory_mb))
 ppo_micro_batch_size_per_gpu=$((scale_factor)) # setup depending on your GPU memory
 #distribute n_rollouts across all available GPUs and cap it with optimal value 16 from the paper
-n_resp_per_prompt=$(python -c "print(min($scale_factor * $dp,16))")
+n_resp_per_prompt=$(python -c "print(min($scale_factor * $DP,16))")
 ppo_mini_batch_size=$((15*n_resp_per_prompt)) # divisible by rollout.n for stable in-actor RLOO grouping
 train_batch_size=$((2*ppo_mini_batch_size)) #should be divisble by ppo_mini_batch_size
 
@@ -136,14 +139,12 @@ exp_number=1
 SFT_MODEL=$(basename $MODEL_PATH)
 exp_name="${loss_mode}-epslow-${clip_ratio_low}-epshigh-${clip_ratio_high}-${SFT_MODEL}-RL-${exp_number}"
 #CKPTS_DIR=/rl/checkpoints/experimental/4b/${loss_mode}/${exp_name}
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 DATA_DIR=${DATA_DIR:-"${REPO_ROOT}/exps/dataset/Omni-MATH-final"}
 DATA_PREP_SCRIPT="${REPO_ROOT}/exps/data_preprocessing/prepare_omni_math_dataset.sh"
 CKPTS_DIR=${CKPTS_DIR:-${REPO_ROOT}/ckpts/RL-Long-RLP_${exp_number}}
 WORKING_DIR=${WORKING_DIR:-"${REPO_ROOT}"}
 LOGS_DIR=${REPO_ROOT}/logs_${exp_number}
-RUNTIME_ENV=${RUNTIME_ENV:-"${REPO_ROOT}/verl/trainer/runtime_env.yaml"}
+RUNTIME_ENV=${RUNTIME_ENV:-"${REPO_ROOT}/exps/config/rpt_runtime_env.yaml"}
 mkdir -p "$DATA_DIR" "$CKPTS_DIR" "$LOGS_DIR"
 KEEP_LAST=2
 PERIOD_SEC=60
@@ -252,7 +253,7 @@ trap 'rm -f "$SENTINEL"; kill "$CLEAN_PID" 2>/dev/null || true' EXIT INT TERM
 
 JOB_ID="train-$(date +%s)-$RANDOM"
 
-teray job submit --no-wait --submission-id "$JOB_ID" --runtime-env="${RUNTIME_ENV}" \
+ray job submit --no-wait --submission-id "$JOB_ID" --runtime-env="${RUNTIME_ENV}" \
     --working-dir "${WORKING_DIR}" \
     -- python3 -m exps.main_rpt \
     --config-path "${REPO_ROOT}/exps/config" \
@@ -332,12 +333,12 @@ teray job submit --no-wait --submission-id "$JOB_ID" --runtime-env="${RUNTIME_EN
     trainer.default_local_dir="${CKPTS_DIR}" \
     trainer.resume_mode=auto \
     trainer.log_val_generations=2 \
-    +actor_rollout_ref.rpt.ema_tau=0.999 \
-    +actor_rollout_ref.rpt.length_penalty=0.0 \
+    actor_rollout_ref.rpt.ema_tau=0.999 \
+    actor_rollout_ref.rpt.length_penalty=0.0 \
     $@
 
 # blocks until the job finishes
-teray job logs -f "$JOB_ID" || true
+ray job logs -f "$JOB_ID" || true
 
 rm -f "$SENTINEL"               # cleaner stops on next tick
 
