@@ -11,9 +11,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""
-FSDP PPO Trainer with Ray-based single controller.
-This trainer supports model-agonistic model initialization with huggingface
+"""Custom RPT trainer layered on top of the upstream Ray PPO trainer.
+
+This trainer keeps the normal rollout-generation and logging pipeline, but it
+changes where reward and advantage are computed:
+
+- trainer-side reward computation is bypassed for training
+- trainer-side advantage computation is bypassed for training
+- old/ref log-prob bookkeeping remains trainer-side
+- the actor update returns a batch that already contains rewards and advantages
+
+The key grouping assumption is that repeated rollouts for the same prompt stay
+consecutive. That is why the launch defaults disable dynamic batch balancing
+and use a PPO mini-batch size divisible by the rollout count. Breaking that
+assumption can silently corrupt both RLOO grouping and EMA deduplication.
 """
 
 import os
@@ -45,21 +56,27 @@ from verl.utils.rollout_skip import RolloutSkip
 
 class RayRPTTrainer(RayPPOTrainer):
     """
-    Note that this trainer runs on the driver process on a single CPU/GPU node.
+    Driver-side trainer that delegates the RPT objective to the actor worker.
+
+    The trainer still owns rollout generation, UID assignment, old/ref log-prob
+    computation, optional critic values, checkpointing, validation, and metric
+    aggregation. What moved out of the trainer is the training reward path:
+    reward and advantages are produced inside ``DataParallelRPTActor`` instead
+    of the standard trainer reward block.
     """
 
     #diff
-    def compute_rpt_response_mask(self, data: DataProto, think: bool=True):
-        """Compute the attention mask for the response part of the sequence.
-    
-        This function extracts the portion of the attention mask that corresponds to the model's response,
-        which is used for masking computations that should only apply to response tokens.
-    
-        Args:
-            data (DataProto): The data containing batched model outputs and inputs.
-    
-        Returns:
-            torch.Tensor: The attention mask for the response tokens.
+    def compute_rpt_response_mask(self, data: DataProto, think: bool = True):
+        """Return either a full-response or thought-only response mask.
+
+        When ``think=True`` this helper truncates the response at the first
+        ``</think>`` token span. When ``think=False`` it simply returns the full
+        response-valid portion of ``attention_mask``.
+
+        The current trainer deliberately calls this with ``think=False`` inside
+        ``compute_kl_related_metrics`` so old/ref log-probs are computed over the
+        whole generated response, not just the thought region. That behavior is
+        intentionally different from the actor-side reward mask.
         """
         responses = data.batch["responses"]
         end_think_ids = self.actor_rollout_wg.tokenizer.encode("</think>", add_special_tokens=False)
@@ -83,6 +100,12 @@ class RayRPTTrainer(RayPPOTrainer):
 
 
     def compute_kl_related_metrics(self, batch: DataProto, metrics: dict, timing_raw: dict):
+        """Compute trainer-side old/ref log-prob bookkeeping over full responses.
+
+        This step remains trainer-side because PPO still needs old log-probs,
+        entropy metrics, and optional reference log-probs for the policy update.
+        The response mask here is built with ``think=False`` on purpose.
+        """
         #diff
         batch.batch["response_mask"] = self.compute_rpt_response_mask(batch, think=False)
 
@@ -110,6 +133,21 @@ class RayRPTTrainer(RayPPOTrainer):
         return batch
 
     def _update_actor(self, batch: DataProto):
+        """Attach actor-side metadata and request the custom worker update.
+
+        The metadata added here is what lets ``DataParallelRPTActor`` compute
+        advantages consistently with the rollout configuration:
+
+        - ``temperature``
+        - ``adv_estimator``
+        - ``gamma``
+        - ``lam``
+        - ``num_repeat``
+        - ``norm_adv_by_std_in_grpo``
+
+        The worker returns the updated batch itself. This wrapper keeps API
+        compatibility by also producing a metrics-only ``DataProto``.
+        """
         if self.use_legacy_worker_impl == "disable":
             raise NotImplementedError("RPT exps path supports only legacy FSDP worker implementation")
 
@@ -128,10 +166,27 @@ class RayRPTTrainer(RayPPOTrainer):
 
     def fit(self):
         """
-        The training loop of PPO.
-        The driver process only need to call the compute functions of the worker group through RPC
-        to construct the PPO dataflow.
-        The light-weight advantage computation is done on the driver process.
+        Run the PPO training loop with actor-side RPT reward computation.
+
+        The flow differs from stock PPO at the update stage but otherwise stays
+        familiar:
+
+        1. load checkpoints and optionally validate
+        2. build ``new_batch`` from the dataloader output
+        3. generate repeated rollouts
+        4. assign one UUID per original prompt before repetition
+        5. repeat the prompt batch so repeated trajectories share the same UID
+        6. merge rollout outputs into the repeated batch
+        7. compute trainer-side old/ref log-probs over the full response
+        8. call ``_update_actor`` so the actor computes rewards, advantages,
+           PPO gradients, and EMA updates
+        9. compute the usual data, timing, and throughput metrics
+
+        Two assumptions are especially important for debugging:
+
+        - repeated UID groups should remain consecutive and intact
+        - ``trainer.balance_batch`` is normally kept disabled because reordering
+          can break the actor-side grouping assumptions
         """
         from omegaconf import OmegaConf
 
@@ -200,21 +255,6 @@ class RayRPTTrainer(RayPPOTrainer):
 
                 new_batch: DataProto = DataProto.from_single_dict(batch_dict)
 
-                # "self._get_gen_batch(new_batch)" pops input_ids and hence do stuff before it happens
-                # drop_think = self.actor_rollout_wg.tokenizer.encode("<think>\n\n</think>\n\n", add_special_tokens=False)
-                # drop_think = torch.tensor(drop_think, device=new_batch["input_ids"].device, dtype=new_batch["input_ids"].dtype)
-                # bdrop_think = drop_think.view(1, -1).repeat(new_batch["input_ids"].size(0), -1)
-                # new_batch["input_ids"] = torch.cat((new_batch["input_ids"], drop_think), dim=1)
-                # last_pos = new_batch["position_ids"][-1]
-                # add_range = torch.arange(last_pos, last_pos + bdrop_think.size(1)).view(1, -1).repeat(new_batch["input_ids"].size(0), -1)
-                # add_range.to(device=bdrop_think.device, dtype=bdrop_think.dtype)
-                # new_batch["attention_mask"] = torch.cat((new_batch["attention_mask"], torch.zeros_like(bdrop_think) + 1), dim=1)
-                # new_batch["position_ids"] = torch.cat((new_batch["position_ids"], add_range), dim=1)
-                # self.actor_rollout_wg.compute_gt_logprob(new_batch)
-                # think_lp = self.actor_rollout_wg.compute_gt_logprob(batch, which="ema")
-                # new_batch = new_batch.union(think_lp.rename("gt_logprob_sum", "ema_gt_logprob_sum"))
-                # new_batch["input_ids"] -= drop_think
-
                 num_gen_batches += 1
                 gen_batch = self._get_gen_batch(new_batch)
                 gen_batch_output = gen_batch.repeat(
@@ -267,103 +307,7 @@ class RayRPTTrainer(RayPPOTrainer):
                         new_batch = self.compute_kl_related_metrics(new_batch, metrics, timing_raw)
                         # otherwise, we will compute those after dynamic sampling
                     
-                    # with marked_timer("reward", timing_raw, "yellow"):
-                    #     # compute scores. Support both model and function-based.
-                    #     # We first compute the scores using reward model. Then, we call reward_fn to combine
-                    #     # the results from reward model and rule-based results.
-                    #     if self.use_rm and "rm_scores" not in new_batch.batch.keys():
-                    #         # we first compute reward model score
-                    #         reward_tensor = self.rm_wg.compute_rm_score(new_batch)
-                    #         new_batch = new_batch.union(reward_tensor)
 
-                    #     # we combine with rule-based rm
-                    #     reward_tensor, reward_extra_infos_dict = compute_reward(new_batch, self.reward_fn)
-
-                    #     new_batch.batch["token_level_scores"] = reward_tensor
-
-                    #     if reward_extra_infos_dict:
-                    #         new_batch.non_tensor_batch.update(
-                    #             {k: np.array(v) for k, v in reward_extra_infos_dict.items()}
-                    #         )
-
-                    #     # compute rewards. apply_kl_penalty if available
-                    #     if self.config.algorithm.use_kl_in_reward:
-                    #         new_batch, kl_metrics = apply_kl_penalty(
-                    #             new_batch, kl_ctrl=self.kl_ctrl_in_reward, kl_penalty=self.config.algorithm.kl_penalty
-                    #         )
-                    #         metrics.update(
-                    #             kl_metrics
-                    #         )  # TODO: This will be cleared if we use multiple genenration batches
-                    #     else:
-                    #         new_batch.batch["token_level_rewards"] = new_batch.batch["token_level_scores"]
-
-                    # if not self.config.algorithm.filter_groups.enable:
-                    #     batch = new_batch
-                    # else:  # NOTE: When prompts after filtering is less than train batch size,
-                    #     # we skip to the next generation batch
-                    #     metric_name = self.config.algorithm.filter_groups.metric
-                    #     if metric_name == "seq_final_reward":
-                    #         # Turn to numpy for easier filtering
-                    #         new_batch.non_tensor_batch["seq_final_reward"] = (
-                    #             new_batch.batch["token_level_rewards"].sum(dim=-1).numpy()
-                    #         )
-                    #     elif metric_name == "seq_reward":
-                    #         new_batch.non_tensor_batch["seq_reward"] = (
-                    #             new_batch.batch["token_level_scores"].sum(dim=-1).numpy()
-                    #         )
-
-                    #     # Collect the sequence reward for each trajectory
-                    #     prompt_uid2metric_vals = defaultdict(list)
-                    #     for uid, metric_val in zip(
-                    #         new_batch.non_tensor_batch["uid"], new_batch.non_tensor_batch[metric_name], strict=True
-                    #     ):
-                    #         prompt_uid2metric_vals[uid].append(metric_val)
-
-                    #     prompt_uid2metric_std = {}
-                    #     for prompt_uid, metric_vals in prompt_uid2metric_vals.items():
-                    #         prompt_uid2metric_std[prompt_uid] = np.std(metric_vals)
-
-                    #     kept_prompt_uids = [
-                    #         uid
-                    #         for uid, std in prompt_uid2metric_std.items()
-                    #         if std > 0 or len(prompt_uid2metric_vals[uid]) == 1
-                    #     ]
-                    #     num_prompt_in_batch += len(kept_prompt_uids)
-
-                    #     kept_traj_idxs = []
-                    #     for idx, traj_from_prompt_uid in enumerate(new_batch.non_tensor_batch["uid"]):
-                    #         if traj_from_prompt_uid in kept_prompt_uids:
-                    #             kept_traj_idxs.append(idx)
-
-                    #     new_batch = new_batch[kept_traj_idxs]
-                    #     batch = new_batch if batch is None else DataProto.concat([batch, new_batch])
-
-                    #     prompt_bsz = self.config.data.train_batch_size
-                    #     if num_prompt_in_batch < prompt_bsz:
-                    #         print(f"{num_prompt_in_batch=} < {prompt_bsz=}")
-                    #         max_num_gen_batches = self.config.algorithm.filter_groups.max_num_gen_batches
-                    #         if max_num_gen_batches <= 0 or num_gen_batches < max_num_gen_batches:
-                    #             print(f"{num_gen_batches=}. Keep generating...")
-                    #             self.gen_steps += 1
-                    #             is_last_step = self.global_steps >= self.total_training_steps
-                    #             continue
-                    #         else:
-                    #             raise ValueError(
-                    #                 f"{num_gen_batches=} >= {max_num_gen_batches=}."
-                    #                 + " Generated too many. Please check if your data are too difficult."
-                    #                 + " You could also try set max_num_gen_batches=0 to enable endless trials."
-                    #             )
-                    #     else:
-                    #         # Align the batch
-                    #         traj_bsz = self.config.data.train_batch_size * self.config.actor_rollout_ref.rollout.n
-                    #         batch = batch[:traj_bsz]
-
-                    # === Updating ===
-                    # Balance the number of valid tokens across DP ranks.
-                    # NOTE: This usually changes the order of data in the `batch`,
-                    # which won't affect the advantage calculation (since it's based on uid),
-                    # but might affect the loss calculation (due to the change of mini-batching).
-                    # TODO: Decouple the DP balancing and mini-batching.
                     if self.config.trainer.balance_batch:
                         self._balance_batch(batch, metrics=metrics)
 

@@ -1,3 +1,26 @@
+"""Custom PPO actor implementing the RPT reward path inside actor updates.
+
+This file contains the main deviation from stock PPO. Reward and advantage are
+not produced in the trainer before ``update_actor``. Instead, the actor:
+
+1. builds a thought-only mask ending at the first ``</think>``
+2. computes ``logp_actor(ground_truth | prompt + generated_thought)``
+3. computes ``logp_ema(ground_truth | prompt + empty_think)``
+4. places the scalar reward on the last thought token
+5. computes grouped advantages inside the actor update
+6. performs PPO optimization
+7. updates the EMA teacher immediately after every optimizer step
+
+This design exists because the EMA baseline should track the current actor at
+mini-batch granularity. If reward were computed once in the trainer before the
+policy update, the EMA teacher would be stale for later mini-batches.
+
+There is also an intentional mask split in this project:
+
+- trainer-side old/ref log-prob bookkeeping uses the full generated response
+- actor-side RPT reward uses only the thought region through ``</think>``
+"""
+
 import copy
 import logging
 import os
@@ -25,7 +48,16 @@ def make_thought_mask(
     response_attn: torch.Tensor,
     dtype: torch.dtype,
 ) -> torch.Tensor:
-    """Return mask=1 from response start through first '</think>' token span."""
+    """Return a thought-only response mask ending at the first ``</think>``.
+
+    The mask is ``1`` from the start of the generated response through the
+    closing ``</think>`` token span and ``0`` after that. If the delimiter is
+    not found, the mask falls back to the valid response length from
+    ``response_attn`` instead of zeroing the sample out.
+
+    This mask is used only for the RPT reward path. Trainer-side KL / old/ref
+    log-prob computation intentionally keeps the full generated response.
+    """
     bs, rlen = responses.shape
     m = len(end_think_ids)
     device = responses.device
@@ -52,6 +84,18 @@ def make_thought_mask(
 
 
 class DataParallelRPTActor(DataParallelPPOActor):
+    """Stock PPO actor plus EMA-backed RPT reward computation.
+
+    The class preserves normal PPO loss code but adds the state and helpers
+    needed to score ground-truth continuation likelihood under:
+
+    - the actor conditioned on prompt plus generated thought
+    - the EMA teacher conditioned on prompt plus empty-think template
+
+    The final scalar reward is the difference between those two quantities and
+    is attached to the last thought token before grouped advantage computation.
+    """
+
     def __init__(self, config, actor_module, actor_optimizer=None):
         super().__init__(config=config, actor_module=actor_module, actor_optimizer=actor_optimizer)
         self.tokenizer = None
@@ -62,6 +106,7 @@ class DataParallelRPTActor(DataParallelPPOActor):
         self.ema_module = None
 
     def setup_rpt(self, tokenizer, end_think_ids: list[int], ema_tau: float, length_penalty: float, drop_think_text: str):
+        """Store RPT runtime state and initialize the EMA teacher copy."""
         self.tokenizer = tokenizer
         self.end_think_ids = list(end_think_ids)
         self.ema_tau = float(ema_tau)
@@ -72,12 +117,19 @@ class DataParallelRPTActor(DataParallelPPOActor):
 
     @torch.no_grad()
     def init_ema_from_actor(self):
+        """Initialize the EMA module as a frozen deep copy of the actor."""
         self.ema_module = copy.deepcopy(self.actor_module).eval()
         for p in self.ema_module.parameters():
             p.requires_grad_(False)
 
     @torch.no_grad()
     def ema_update(self, tau: float):
+        """Update the EMA teacher after each optimizer step.
+
+        The update is ``ema = tau * ema + (1 - tau) * actor``. Performing this
+        step inside the actor update is what keeps the reward baseline aligned
+        with the current mini-batch training state.
+        """
         if self.ema_module is None:
             self.init_ema_from_actor()
         for ep, p in zip(self.ema_module.parameters(), self.actor_module.parameters()):
@@ -90,6 +142,12 @@ class DataParallelRPTActor(DataParallelPPOActor):
         temperature,
         calculate_entropy=False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Reuse the stock micro-batch forward with either actor or EMA module.
+
+        The helper temporarily swaps ``self.actor_module`` so the upstream
+        forward implementation can be reused for both reward branches without
+        rewriting the parallel log-prob path from scratch.
+        """
         original_actor_module = self.actor_module
         self.actor_module = actor_module
         try:
@@ -102,6 +160,12 @@ class DataParallelRPTActor(DataParallelPPOActor):
             self.actor_module = original_actor_module
 
     def _extract_ground_truth(self, batch: DataProto) -> list[str]:
+        """Read target continuations from the dataset-specific non-tensor fields.
+
+        The intended source is ``non_tensor_batch['reward_model']['ground_truth']``
+        as produced by ``omni_math_processing.py``. ``gt_text`` is kept only as a
+        fallback.
+        """
         if "reward_model" in batch.non_tensor_batch:
             gt_texts: list[str] = []
             for rm_obj in batch.non_tensor_batch["reward_model"]:
@@ -120,6 +184,22 @@ class DataParallelRPTActor(DataParallelPPOActor):
 
     @torch.no_grad()
     def compute_gt_logprob(self, batch: DataProto, which: str = "actor") -> DataProto:
+        """Compute summed log-prob of the known target continuation.
+
+        For each sample this method reconstructs a synthetic sequence:
+
+        - prefix = prompt tokens + generated thought tokens
+        - suffix = ground-truth target tokens
+
+        The suffix log-probs are then summed into one scalar per sample and
+        returned as ``gt_logprob_sum``. The same logic is used for both the
+        actor and EMA modules.
+
+        The implementation still uses explicit per-sample Python reconstruction
+        loops. That is not the most elegant form, but it makes prompt boundary,
+        thought boundary, and suffix tokenization behavior explicit for
+        debugging.
+        """
         if self.tokenizer is None:
             raise RuntimeError("RPT tokenizer is not initialized. Call setup_rpt() first.")
 
@@ -212,6 +292,16 @@ class DataParallelRPTActor(DataParallelPPOActor):
 
     @staticmethod
     def _dedupe_consecutive_uids(data: DataProto) -> tuple[DataProto, torch.Tensor]:
+        """Collapse consecutive repeated prompt UIDs for EMA baseline reuse.
+
+        Repeated rollouts from the same prompt share the same EMA baseline
+        ``prompt + empty_think``. When those repetitions stay consecutive, the
+        EMA forward only has to be done once per UID group and then expanded
+        back with ``inverse_index``.
+
+        ``uid`` lives in ``non_tensor_batch`` as a NumPy object array, so this
+        path intentionally uses NumPy rather than ``torch.unique_consecutive``.
+        """
         if "uid" not in data.non_tensor_batch:
             inv = torch.arange(len(data), dtype=torch.long)
             return data, inv
@@ -232,6 +322,23 @@ class DataParallelRPTActor(DataParallelPPOActor):
         return dedup, torch.from_numpy(inverse)
 
     def _build_ema_batch_from_prompts(self, micro_batch: DataProto) -> tuple[DataProto, torch.Tensor]:
+        """Construct the EMA baseline batch from prompt-only prefixes.
+
+        The EMA branch must evaluate
+        ``logp_ema(ground_truth | prompt + empty_think)``, not the generated
+        thought. This helper therefore:
+
+        1. deduplicates consecutive repeated prompt UIDs
+        2. slices the prompt portion from ``input_ids``
+        3. appends the configured empty-think template
+        4. rebuilds attention / position / response tensors
+        5. computes a response mask for the synthetic empty-think response
+
+        The implementation assumes the current verl batch formatting where
+        prompt slices remain aligned after removing the response region. If
+        prompt boundaries or position ids look wrong on the VM, inspect this
+        method first.
+        """
         dedup_batch, inverse_index = self._dedupe_consecutive_uids(micro_batch)
 
         input_ids = dedup_batch.batch["input_ids"]
@@ -296,6 +403,7 @@ class DataParallelRPTActor(DataParallelPPOActor):
         return ema_batch, inverse_index
 
     def _set_overlong_advantages(self, mini_batch: DataProto):
+        """Experimental hook for penalizing advantages after the thought end."""
         if self.length_penalty == 0.0 or "advantages" not in mini_batch.batch.keys():
             return
 
@@ -305,6 +413,20 @@ class DataParallelRPTActor(DataParallelPPOActor):
             mini_batch.batch["advantages"][i, last_idx[i] :] = self.length_penalty
 
     def _compute_reward_lp_minibatch(self, mini_batch: DataProto) -> DataProto:
+        """Compute the full RPT reward tensors for one PPO mini-batch.
+
+        The logical computation is mini-batch scoped, but the expensive forward
+        passes are micro-batched for memory fit. For each micro-batch the actor
+        branch scores the target continuation after the generated thought, while
+        the EMA branch scores the same target after ``prompt + empty_think``.
+
+        The resulting scalar reward
+
+        ``think_gt_logprob_sum - ema_gt_logprob_sum``
+
+        is placed on the last thought token and copied into both
+        ``token_level_scores`` and ``token_level_rewards``.
+        """
         responses = mini_batch.batch["responses"]
         attn_full = mini_batch.batch["attention_mask"]
         resp_len = responses.size(1)
@@ -355,6 +477,23 @@ class DataParallelRPTActor(DataParallelPPOActor):
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
     def update_policy(self, data: DataProto):
+        """Run reward computation, advantage computation, PPO, and EMA updates.
+
+        This method is the core of the custom training flow:
+
+        1. select the tensors PPO still needs from the rollout batch
+        2. split into PPO mini-batches
+        3. compute RPT rewards inside each mini-batch
+        4. compute grouped advantages inside the actor
+        5. preserve the first-epoch mini-batches so the trainer gets back a
+           batch containing rewards, scores, advantages, and returns
+        6. run standard PPO optimization over micro-batches
+        7. update the EMA teacher after every optimizer step
+
+        Keeping reward and advantage creation here is the main behavioral
+        deviation from stock PPO and is what lets the EMA baseline stay fresh at
+        mini-batch granularity.
+        """
         self.actor_module.train()
 
         temperature = data.meta_info["temperature"]

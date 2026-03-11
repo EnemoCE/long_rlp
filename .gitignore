@@ -132,7 +132,8 @@ ENV/
 .hf-cache/
 .uv-cache/
 exps/Omni-MATH/
-exps/dataset/Omni-MATH_final/
+exps/dataset/
+exps/junk
 
 #models
 exps/tokenizers/

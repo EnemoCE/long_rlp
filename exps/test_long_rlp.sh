@@ -72,39 +72,74 @@ kl_loss_coef=0.0
 
 clip_ratio_low=0.0003 # as recommended by the paper, see Sec. 5.1
 clip_ratio_high=0.0004 # as recommended by the paper, see Sec. 5.1
-train_batch_size=300
-ppo_mini_batch_size=100 # divisible by rollout.n=6 for stable in-actor RLOO grouping
-ppo_micro_batch_size_per_gpu=10 # setup depending on your GPU memory
-n_resp_per_prompt=10
 
-# 1024 * 8 and 1024 * 2 before
+#estimated as a real limit for omni_math prompts - NEVER CHANGE
 max_prompt_length=1024
+#recommended completion length from RLP NVIDIA paper - don't change
 max_response_length=2048
-# 20480 hard limit from exps (inference 30720)
-#10240 * 2 ~ 8 * average_seq ?
-#20480 > 8 * average_seq (good)
-#average seq often > 2560 (empirically) -> bad there will be partition
-#10240 -> 768 ~ 13.333 smaller
-# 768 * x ~ 20480 
-# x ~ 27
-# average seq < 768, 768*16 = 12288 usage at most
-# make at least max_seq_len = hard_limit / 16 = 20480 / 16 = 1280 
-# 1280 * x ~ 20480
-# x = 16
+context_len=$((max_prompt_length + max_response_length))
+
+#always 1
+TP=1
+#always 1
+PP=1
+#num gpus available
+DP=1
+ZERO_STAGE="${ZERO_STAGE:-0}"
+BATCH_ACCUM="${BATCH_ACCUM:-1}"
+
+# Это выставит:
+#   one_batch_static_memory_mb
+#   one_batch_dynamic_memory_mb
+#   peak_memory_tbi_mb
+#   num_hidden_layers_in_pp
+source <(
+  python calc_nanotron_memory.py \
+    --model_name "${MODEL_PATH}" \
+    --seq_len "${context_len}" \
+    --mbs 1 \
+    --batch_accum "${BATCH_ACCUM}" \
+    --tp "${TP}" \
+    --pp "${PP}" \
+    --dp "${DP}" \
+    --zero_stage "${ZERO_STAGE}"
+)
+
+echo "one_batch_static_memory_mb=${one_batch_static_memory_mb}"
+echo "one_batch_dynamic_memory_mb=${one_batch_dynamic_memory_mb}"
+echo "peak_memory_tbi_mb=${peak_memory_tbi_mb}"
+
+PER_RANK_MAX_MEMORY=80000
+#manually check GPU available memory and update PER_RANK_MAX_MEMORY value accordingly
+#memory gpu footprint above was calculated for ppo_micro_batch_size_per_gpu=1 with 
+#context_len = max_prompt_length + max_response_length and model = MODEL_PATH and other params
+#non-activations example: one_batch_static_memory_mb=29533
+#activations memory example: one_batch_dynamic_memory_mb=10617
+#9/10 factor to protect from OOM - 88.7% utilization for H200 141 Gb, model Qwen3-1.7B, context=3072
+scale_factor=$(((PER_RANK_MAX_MEMORY*9/10-one_batch_static_memory_mb)/one_batch_dynamic_memory_mb))
+ppo_micro_batch_size_per_gpu=$((scale_factor)) # setup depending on your GPU memory
+#distribute n_rollouts across all available GPUs and cap it with optimal value 16 from the paper
+n_resp_per_prompt=$(python -c "print(min($scale_factor * $dp,16))")
+ppo_mini_batch_size=$((15*n_resp_per_prompt)) # divisible by rollout.n for stable in-actor RLOO grouping
+train_batch_size=$((2*ppo_mini_batch_size)) #should be divisble by ppo_mini_batch_size
+
+
+
+
 # dapo reward manager params
 enable_overlong_buffer=false # true
 overlong_buffer_len=$((512))
 overlong_penalty_factor=0
 
 # Paths and namings
-exp_number=3
+exp_number=1
 SFT_MODEL=$(basename $MODEL_PATH)
 exp_name="${loss_mode}-epslow-${clip_ratio_low}-epshigh-${clip_ratio_high}-${SFT_MODEL}-RL-${exp_number}"
 #CKPTS_DIR=/rl/checkpoints/experimental/4b/${loss_mode}/${exp_name}
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-DATA_DIR=${DATA_DIR:-"${REPO_ROOT}/exps/dataset/Omni-MATH"}
-DATA_PREP_SCRIPT="${REPO_ROOT}/exps/prepare_omni_math_dataset.sh"
+DATA_DIR=${DATA_DIR:-"${REPO_ROOT}/exps/dataset/Omni-MATH-final"}
+DATA_PREP_SCRIPT="${REPO_ROOT}/exps/data_preprocessing/prepare_omni_math_dataset.sh"
 CKPTS_DIR=${CKPTS_DIR:-${REPO_ROOT}/ckpts/RL-Long-RLP_${exp_number}}
 WORKING_DIR=${WORKING_DIR:-"${REPO_ROOT}"}
 LOGS_DIR=${REPO_ROOT}/logs_${exp_number}
@@ -120,7 +155,6 @@ export TMPDIR="$RAY_TMPDIR"
 # mirror ALL stdout/stderr to terminal AND a timestamped file
 exec > >(tee -a "${LOGS_DIR}/train_$(date +%F_%H-%M-%S).out") 2>&1
 ## -------------------------------------------------------------
-
 
 : "${RAY_IP:=localhost}"
 export RAY_ADDRESS=${RAY_ADDRESS:-"http://${RAY_IP}:8265"}
@@ -187,12 +221,13 @@ gen_tp=1
 entropy_checkpointing=true # This enables entropy recomputation specifically for the entropy calculation, lowering memory usage during training.
 
 # ------------------------------------- train/val data preparation ---------------------------------------
+#first_time_dataset_prep=false
 if [ "$first_time_dataset_prep" = true ]; then
     echo "Preprocessing Omni-MATH dataset..."
     bash "${DATA_PREP_SCRIPT}"
 fi
 
-python "${REPO_ROOT}/exps/jinja_template_in_config.py" \
+python "${REPO_ROOT}/exps/scripts/jinja_template_in_config.py" \
     --yaml "${REPO_ROOT}/exps/config/rpt_trainer.yaml" \
     --jinja "${REPO_ROOT}/exps/jinja/rpt_template.jinja"
 

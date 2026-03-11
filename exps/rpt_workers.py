@@ -1,3 +1,24 @@
+"""Custom legacy FSDP worker wrapper for the RPT experiment path.
+
+This module stays deliberately thin. It reuses the upstream async FSDP worker
+for model initialization and transport, then swaps the actor implementation to
+``DataParallelRPTActor`` and returns the fully updated training batch from
+actor updates.
+
+The worker is responsible for passing the runtime pieces that the actor cannot
+discover by itself:
+
+- tokenizer
+- token ids for ``</think>``
+- ``actor_rollout_ref.rpt.ema_tau``
+- ``actor_rollout_ref.rpt.length_penalty``
+- ``actor_rollout_ref.rpt.drop_think_text``
+
+Those values are what let the actor construct the thought mask, compute
+ground-truth log-prob rewards, and update the EMA teacher after every
+optimizer step.
+"""
+
 import os
 
 import psutil
@@ -22,8 +43,32 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
 class AsyncThoughtMaskActorRolloutRefWorker(AsyncActorRolloutRefWorker):
+    """Legacy async actor/rollout/ref worker with a custom RPT actor.
+
+    Its responsibilities differ from the stock worker in two places only:
+
+    - ``init_model`` replaces the PPO actor with ``DataParallelRPTActor``
+    - ``update_actor`` returns the updated ``DataProto`` batch, not just
+      metrics, so trainer-side metric computation can still run after actor-side
+      reward / advantage creation
+    """
+
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def init_model(self):
+        """Initialize the normal worker stack, then inject the RPT actor.
+
+        After ``super().init_model()`` completes, the actor path is rewritten to
+        use ``DataParallelRPTActor``. This is also where the custom ``rpt``
+        config block is consumed and converted into the actor runtime state.
+
+        The actor receives:
+
+        - the tokenizer
+        - ``</think>`` token ids for thought masking
+        - EMA decay ``ema_tau``
+        - experimental ``length_penalty``
+        - the empty-think template used for the EMA baseline prompt
+        """
         super().init_model()
 
         if self._is_actor:
@@ -51,6 +96,21 @@ class AsyncThoughtMaskActorRolloutRefWorker(AsyncActorRolloutRefWorker):
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="red", role="actor_update")
     def update_actor(self, data: DataProto):
+        """Run the actor update and return the modified batch plus metrics.
+
+        The important behavioral difference from upstream is the return value.
+        ``DataParallelRPTActor.update_policy`` writes:
+
+        - ``token_level_scores``
+        - ``token_level_rewards``
+        - ``advantages``
+        - ``returns``
+
+        into the batch during the first PPO epoch. Those tensors are preserved
+        in the returned ``DataProto`` and metrics are attached to
+        ``updated_batch.meta_info['metrics']`` so the trainer can continue using
+        normal data-metric utilities after actor-side reward computation.
+        """
         assert self._is_actor
 
         if self._is_offload_param:
