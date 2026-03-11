@@ -1,0 +1,1 @@
+#report every fixed bug and reward at last succesful training step 

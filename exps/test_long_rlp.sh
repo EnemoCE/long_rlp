@@ -62,7 +62,7 @@ first_time_dataset_prep=true # prepare dataset
 test_freq=10
 save_freq=10
 total_epochs=10
-total_training_steps=500
+total_training_steps=5
 val_before_train=false
 
 use_kl_in_reward=false
