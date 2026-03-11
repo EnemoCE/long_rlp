@@ -21,6 +21,7 @@ There is also an intentional mask split in this project:
 - actor-side RPT reward uses only the thought region through ``</think>``
 """
 
+import contextlib
 import copy
 import logging
 import os
@@ -28,6 +29,7 @@ from typing import Tuple
 
 import numpy as np
 import torch
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 from verl import DataProto
 from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
@@ -132,6 +134,12 @@ class DataParallelRPTActor(DataParallelPPOActor):
             break
         return module
 
+    def _ema_actor_param_ctx(self):
+        """Expose full actor params when the policy lives under an FSDP shell."""
+        if isinstance(self.actor_module, FSDP):
+            return FSDP.summon_full_params(self.actor_module, writeback=False, recurse=False)
+        return contextlib.nullcontext()
+
     @torch.no_grad()
     def init_ema_from_actor(self):
         """Initialize the EMA module from the unwrapped actor state dict.
@@ -141,16 +149,21 @@ class DataParallelRPTActor(DataParallelPPOActor):
         plain model instance from the wrapped module's config instead and load a
         detached copy of its state.
         """
-        source_module = self._get_ema_source_module()
-        ema_config = copy.deepcopy(source_module.config)
-        self.ema_module = source_module.__class__(ema_config)
-        ema_state = {name: tensor.detach().cpu().clone() for name, tensor in source_module.state_dict().items()}
-        self.ema_module.load_state_dict(ema_state)
-        first_param = next(source_module.parameters(), None)
-        if first_param is not None:
-            self.ema_module.to(device=first_param.device, dtype=self.param_dtype)
-        else:
-            self.ema_module.to(dtype=self.param_dtype)
+        with self._ema_actor_param_ctx():
+            source_module = self._get_ema_source_module()
+            ema_config = copy.deepcopy(source_module.config)
+            self.ema_module = source_module.__class__(ema_config)
+            ema_state = {
+                name: tensor.detach().cpu().clone()
+                for name, tensor in source_module.state_dict().items()
+                if "_flat_param" not in name
+            }
+            self.ema_module.load_state_dict(ema_state)
+            first_param = next(source_module.parameters(), None)
+            if first_param is not None:
+                self.ema_module.to(device=first_param.device, dtype=self.param_dtype)
+            else:
+                self.ema_module.to(dtype=self.param_dtype)
         del ema_state
         self.ema_module.eval()
         for p in self.ema_module.parameters():
@@ -166,9 +179,10 @@ class DataParallelRPTActor(DataParallelPPOActor):
         """
         if self.ema_module is None:
             self.init_ema_from_actor()
-        source_module = self._get_ema_source_module()
-        for ep, p in zip(self.ema_module.parameters(), source_module.parameters()):
-            ep.data.mul_(tau).add_(p.data.to(device=ep.device, dtype=ep.dtype), alpha=(1.0 - tau))
+        with self._ema_actor_param_ctx():
+            source_module = self._get_ema_source_module()
+            for ep, p in zip(self.ema_module.parameters(), source_module.parameters()):
+                ep.data.mul_(tau).add_(p.data.to(device=ep.device, dtype=ep.dtype), alpha=(1.0 - tau))
 
     def _forward_micro_batch_with_module(
         self,
