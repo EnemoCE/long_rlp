@@ -13,6 +13,9 @@
 
 set -xeuo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+
 # activate the venv
 #echo "Activating verl environment..."
 #eval "$(conda shell.bash hook)"
@@ -94,7 +97,7 @@ BATCH_ACCUM="${BATCH_ACCUM:-1}"
 #   peak_memory_tbi_mb
 #   num_hidden_layers_in_pp
 source <(
-  python calc_nanotron_memory.py \
+  python "${REPO_ROOT}/exps/scripts/calc_nanotron_memory.py" \
     --model_name "${MODEL_PATH}" \
     --seq_len "${context_len}" \
     --mbs 1 \
@@ -119,7 +122,7 @@ PER_RANK_MAX_MEMORY=80000
 scale_factor=$(((PER_RANK_MAX_MEMORY*9/10-one_batch_static_memory_mb)/one_batch_dynamic_memory_mb))
 ppo_micro_batch_size_per_gpu=$((scale_factor)) # setup depending on your GPU memory
 #distribute n_rollouts across all available GPUs and cap it with optimal value 16 from the paper
-n_resp_per_prompt=$(python -c "print(min($scale_factor * $dp,16))")
+n_resp_per_prompt=$(python -c "print(min($scale_factor * $DP,16))")
 ppo_mini_batch_size=$((15*n_resp_per_prompt)) # divisible by rollout.n for stable in-actor RLOO grouping
 train_batch_size=$((2*ppo_mini_batch_size)) #should be divisble by ppo_mini_batch_size
 
@@ -136,8 +139,6 @@ exp_number=1
 SFT_MODEL=$(basename $MODEL_PATH)
 exp_name="${loss_mode}-epslow-${clip_ratio_low}-epshigh-${clip_ratio_high}-${SFT_MODEL}-RL-${exp_number}"
 #CKPTS_DIR=/rl/checkpoints/experimental/4b/${loss_mode}/${exp_name}
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 DATA_DIR=${DATA_DIR:-"${REPO_ROOT}/exps/dataset/Omni-MATH-final"}
 DATA_PREP_SCRIPT="${REPO_ROOT}/exps/data_preprocessing/prepare_omni_math_dataset.sh"
 CKPTS_DIR=${CKPTS_DIR:-${REPO_ROOT}/ckpts/RL-Long-RLP_${exp_number}}
@@ -252,7 +253,7 @@ trap 'rm -f "$SENTINEL"; kill "$CLEAN_PID" 2>/dev/null || true' EXIT INT TERM
 
 JOB_ID="train-$(date +%s)-$RANDOM"
 
-teray job submit --no-wait --submission-id "$JOB_ID" --runtime-env="${RUNTIME_ENV}" \
+ray job submit --no-wait --submission-id "$JOB_ID" --runtime-env="${RUNTIME_ENV}" \
     --working-dir "${WORKING_DIR}" \
     -- python3 -m exps.main_rpt \
     --config-path "${REPO_ROOT}/exps/config" \
@@ -337,7 +338,7 @@ teray job submit --no-wait --submission-id "$JOB_ID" --runtime-env="${RUNTIME_EN
     $@
 
 # blocks until the job finishes
-teray job logs -f "$JOB_ID" || true
+ray job logs -f "$JOB_ID" || true
 
 rm -f "$SENTINEL"               # cleaner stops on next tick
 
