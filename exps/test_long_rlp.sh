@@ -88,7 +88,9 @@ TP=1
 PP=1
 #num gpus available
 DP=1
-ZERO_STAGE="${ZERO_STAGE:-0}"
+
+#zero_stage=3 because fsdp is used by default as actor_rollout_ref.actor.fsdp_config.strategy: 'fsdp' and fsdp_config.reshard_after_forward=True
+ZERO_STAGE="${ZERO_STAGE:-3}"
 BATCH_ACCUM="${BATCH_ACCUM:-1}"
 
 # Это выставит:
@@ -119,7 +121,7 @@ PER_RANK_MAX_MEMORY=80000
 #non-activations example: one_batch_static_memory_mb=29533
 #activations memory example: one_batch_dynamic_memory_mb=10617
 #9/10 factor to protect from OOM - 88.7% utilization for H200 141 Gb, model Qwen3-1.7B, context=3072
-scale_factor=$(((PER_RANK_MAX_MEMORY*9/10-one_batch_static_memory_mb)/one_batch_dynamic_memory_mb))
+scale_factor=$(((PER_RANK_MAX_MEMORY*11/12-one_batch_static_memory_mb)/one_batch_dynamic_memory_mb))
 ppo_micro_batch_size_per_gpu=$((scale_factor)) # setup depending on your GPU memory
 #distribute n_rollouts across all available GPUs and cap it with optimal value 16 from the paper
 n_resp_per_prompt=$(python -c "print(min($scale_factor * $DP,16))")
@@ -220,6 +222,7 @@ infer_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 3*5))
 #offload=true
 gen_tp=1
 entropy_checkpointing=true # This enables entropy recomputation specifically for the entropy calculation, lowering memory usage during training.
+async_agent_workers=1 # single rollout replica on this VM; avoid mismatched async chunking defaults
 
 # ------------------------------------- train/val data preparation ---------------------------------------
 #first_time_dataset_prep=false
@@ -305,6 +308,7 @@ ray job submit --no-wait --submission-id "$JOB_ID" --runtime-env="${RUNTIME_ENV}
     actor_rollout_ref.rollout.temperature=${temperature} \
     actor_rollout_ref.rollout.top_p=${top_p} \
     actor_rollout_ref.rollout.top_k=${top_k} \
+    actor_rollout_ref.rollout.agent.num_workers=${async_agent_workers} \
     actor_rollout_ref.rollout.val_kwargs.temperature=${temperature} \
     actor_rollout_ref.rollout.val_kwargs.top_p=${val_top_p} \
     actor_rollout_ref.rollout.val_kwargs.top_k=${top_k} \
