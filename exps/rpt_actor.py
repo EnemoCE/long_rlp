@@ -140,6 +140,13 @@ class DataParallelRPTActor(DataParallelPPOActor):
             return FSDP.summon_full_params(self.actor_module, writeback=False, recurse=False)
         return contextlib.nullcontext()
 
+    @staticmethod
+    def _materialize_tensor(tensor: torch.Tensor) -> torch.Tensor:
+        """Convert DTensor-like values into plain local tensors for EMA copies."""
+        if hasattr(tensor, "full_tensor"):
+            tensor = tensor.full_tensor()
+        return tensor.detach().cpu().clone()
+
     @torch.no_grad()
     def init_ema_from_actor(self):
         """Initialize the EMA module from the unwrapped actor state dict.
@@ -154,7 +161,7 @@ class DataParallelRPTActor(DataParallelPPOActor):
             ema_config = copy.deepcopy(source_module.config)
             self.ema_module = source_module.__class__(ema_config)
             ema_state = {
-                name: tensor.detach().cpu().clone()
+                name: self._materialize_tensor(tensor)
                 for name, tensor in source_module.state_dict().items()
                 if "_flat_param" not in name
             }
@@ -182,7 +189,8 @@ class DataParallelRPTActor(DataParallelPPOActor):
         with self._ema_actor_param_ctx():
             source_module = self._get_ema_source_module()
             for ep, p in zip(self.ema_module.parameters(), source_module.parameters()):
-                ep.data.mul_(tau).add_(p.data.to(device=ep.device, dtype=ep.dtype), alpha=(1.0 - tau))
+                actor_param = p.full_tensor() if hasattr(p, "full_tensor") else p.data
+                ep.data.mul_(tau).add_(actor_param.to(device=ep.device, dtype=ep.dtype), alpha=(1.0 - tau))
 
     def _forward_micro_batch_with_module(
         self,
