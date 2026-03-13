@@ -38,6 +38,7 @@ import torch
 from tqdm import tqdm
 
 from verl import DataProto
+from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
 from verl.trainer.ppo.core_algos import agg_loss
 from verl.trainer.ppo.metric_utils import compute_data_metrics, compute_throughout_metrics, compute_timing_metrics
 from verl.trainer.ppo.ray_trainer import (
@@ -97,6 +98,22 @@ class RayRPTTrainer(RayPPOTrainer):
                     response_mask[i, j+tel:] = 0
                     found = False
         return response_mask
+
+    def _generate_sequences(self, batch: DataProto) -> DataProto:
+        """Generate sequences while preserving async rollout divisibility constraints.
+
+        ``AgentLoopManager.generate_sequences`` splits the batch evenly across
+        ``rollout.agent.num_workers``. The RPT launch script chooses batch sizes
+        for PPO/RLOO grouping, not for that worker count, so async rollout needs
+        the same pad/unpad guard that upstream already uses in validation.
+        """
+        if not self.async_rollout_mode:
+            return self.actor_rollout_wg.generate_sequences(batch)
+
+        size_divisor = self.config.actor_rollout_ref.rollout.agent.num_workers
+        batch_padded, pad_size = pad_dataproto_to_divisor(batch, size_divisor)
+        output_padded = self.async_rollout_manager.generate_sequences(batch_padded)
+        return unpad_dataproto(output_padded, pad_size=pad_size)
 
 
     def compute_kl_related_metrics(self, batch: DataProto, metrics: dict, timing_raw: dict):
@@ -266,7 +283,7 @@ class RayRPTTrainer(RayPPOTrainer):
                 with marked_timer("step", timing_raw):
                     # generate a batch
                     with marked_timer("gen", timing_raw, "red"):
-                        gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
+                        gen_batch_output = self._generate_sequences(gen_batch_output)
                         timing_raw.update(gen_batch_output.meta_info["timing"])
                         gen_batch_output.meta_info.pop("timing", None)
 
@@ -274,7 +291,7 @@ class RayRPTTrainer(RayPPOTrainer):
                         with marked_timer("gen_max", timing_raw, "red"):
                             gen_baseline_batch = deepcopy(gen_batch)
                             gen_baseline_batch.meta_info["do_sample"] = False
-                            gen_baseline_output = self.async_rollout_manager.generate_sequences(gen_baseline_batch)
+                            gen_baseline_output = self._generate_sequences(gen_baseline_batch)
 
                             new_batch = new_batch.union(gen_baseline_output)
                             # compute reward model score on new_batch
