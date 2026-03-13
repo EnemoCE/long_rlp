@@ -184,12 +184,14 @@ class DataParallelRPTActor(DataParallelPPOActor):
             p.requires_grad_(False)
 
     def _named_actor_params(self) -> dict[str, torch.Tensor]:
-        """Collect actor params by name to keep EMA pairing stable under FSDP."""
+        """Collect actor params in the same key space used by EMA init."""
         source_module = self._get_ema_source_module()
+        actor_state = source_module.state_dict()
+        ema_param_names = {name for name, _ in self.ema_module.named_parameters()}
         return {
-            name: self._detach_tensor_view(param)
-            for name, param in source_module.named_parameters()
-            if "_flat_param" not in name
+            name: self._detach_tensor_view(tensor)
+            for name, tensor in actor_state.items()
+            if name in ema_param_names and "_flat_param" not in name
         }
 
     @torch.no_grad()
