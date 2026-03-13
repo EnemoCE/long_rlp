@@ -30,7 +30,7 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 # Set how many GPUs we actually have on this node.
 #export GPUS_PER_NODE=8
-export GPUS_PER_NODE=1
+export GPUS_PER_NODE=2
 
 #NNODES=${SLURM_JOB_NUM_NODES}
 export NNODES=1
@@ -87,7 +87,7 @@ TP=1
 #always 1
 PP=1
 #num gpus available
-DP=1
+DP=2
 
 #zero_stage=3 because fsdp is used by default as actor_rollout_ref.actor.fsdp_config.strategy: 'fsdp' and fsdp_config.reshard_after_forward=True
 ZERO_STAGE="${ZERO_STAGE:-3}"
@@ -284,6 +284,8 @@ ray job submit --no-wait --submission-id "$JOB_ID" --runtime-env="${RUNTIME_ENV}
     actor_rollout_ref.ref.log_prob_use_dynamic_bsz=${use_dynamic_bsz} \
     actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=${use_dynamic_bsz} \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=${actor_ppo_max_token_len} \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=${ppo_micro_batch_size_per_gpu} \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=${ppo_micro_batch_size_per_gpu} \
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=${infer_ppo_max_token_len} \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=${infer_ppo_max_token_len} \
     actor_rollout_ref.rollout.name=${rollout_engine} \
