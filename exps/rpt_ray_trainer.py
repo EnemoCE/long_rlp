@@ -50,6 +50,7 @@ from verl.utils.metric import reduce_metrics
 from verl.utils.profiler import marked_timer
 from verl.utils.rollout_skip import RolloutSkip
 
+from exps.rpt_actor import make_thought_mask
 
 
 
@@ -80,24 +81,19 @@ class RayRPTTrainer(RayPPOTrainer):
         intentionally different from the actor-side reward mask.
         """
         responses = data.batch["responses"]
-        end_think_ids = self.actor_rollout_wg.tokenizer.encode("</think>", add_special_tokens=False)
-        device = responses.device
-        needle = torch.tensor(end_think_ids, device=device, dtype=responses.dtype)
-        tel = len(end_think_ids)
         attention_mask = data.batch["attention_mask"]
         response_length = responses.size(1)
         response_mask = attention_mask[:, -response_length:]
-        if think:
-            for i in range(responses.size(0)):
-                found = False
-                for j in range(len(responses[i]) - tel + 1):
-                    if (responses[i, j:j+tel] == needle).all():
-                        found = True
-                        break
-                if found:
-                    response_mask[i, j+tel:] = 0
-                    found = False
-        return response_mask
+        if not think:
+            return response_mask
+
+        end_think_ids = self.tokenizer.encode("</think>", add_special_tokens=False)
+        return make_thought_mask(
+            responses=responses,
+            end_think_ids=end_think_ids,
+            response_attn=response_mask,
+            dtype=response_mask.dtype,
+        )
 
     def _generate_sequences(self, batch: DataProto) -> DataProto:
         """Generate sequences while preserving async rollout divisibility constraints.
