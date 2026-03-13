@@ -10,6 +10,7 @@ data:
   gen_batch_size: ${data.train_batch_size}
 
 reward_model:
+  use_reward_loop: false
   reward_manager: dapo
   overlong_buffer:
     enable: false # We try to avoid forgetting to set enable
