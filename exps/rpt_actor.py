@@ -147,6 +147,13 @@ class DataParallelRPTActor(DataParallelPPOActor):
             tensor = tensor.full_tensor()
         return tensor.detach().cpu().clone()
 
+    @staticmethod
+    def _detach_tensor_view(tensor: torch.Tensor) -> torch.Tensor:
+        """Convert DTensor-like values into detached dense tensors for EMA math."""
+        if hasattr(tensor, "full_tensor"):
+            tensor = tensor.full_tensor()
+        return tensor.detach()
+
     @torch.no_grad()
     def init_ema_from_actor(self):
         """Initialize the EMA module from the unwrapped actor state dict.
@@ -176,6 +183,15 @@ class DataParallelRPTActor(DataParallelPPOActor):
         for p in self.ema_module.parameters():
             p.requires_grad_(False)
 
+    def _named_actor_params(self) -> dict[str, torch.Tensor]:
+        """Collect actor params by name to keep EMA pairing stable under FSDP."""
+        source_module = self._get_ema_source_module()
+        return {
+            name: self._detach_tensor_view(param)
+            for name, param in source_module.named_parameters()
+            if "_flat_param" not in name
+        }
+
     @torch.no_grad()
     def ema_update(self, tau: float):
         """Update the EMA teacher after each optimizer step.
@@ -187,9 +203,13 @@ class DataParallelRPTActor(DataParallelPPOActor):
         if self.ema_module is None:
             self.init_ema_from_actor()
         with self._ema_actor_param_ctx():
-            source_module = self._get_ema_source_module()
-            for ep, p in zip(self.ema_module.parameters(), source_module.parameters()):
-                actor_param = p.full_tensor() if hasattr(p, "full_tensor") else p.data
+            actor_params = self._named_actor_params()
+            for name, ep in self.ema_module.named_parameters():
+                actor_param = actor_params[name]
+                if ep.shape != actor_param.shape:
+                    raise RuntimeError(
+                        f"EMA parameter shape mismatch for {name}: ema={tuple(ep.shape)} actor={tuple(actor_param.shape)}"
+                    )
                 ep.data.mul_(tau).add_(actor_param.to(device=ep.device, dtype=ep.dtype), alpha=(1.0 - tau))
 
     def _forward_micro_batch_with_module(
