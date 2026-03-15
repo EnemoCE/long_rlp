@@ -46,6 +46,7 @@ from verl.trainer.ppo.ray_trainer import (
     RayPPOTrainer,
 )
 from verl.trainer.ppo.reward import compute_reward
+from verl.utils.flops_counter import get_device_flops
 from verl.utils.metric import reduce_metrics
 from verl.utils.profiler import marked_timer
 from verl.utils.rollout_skip import RolloutSkip
@@ -401,7 +402,18 @@ class RayRPTTrainer(RayPPOTrainer):
                 # collect metrics
                 metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
-                # TODO: implement actual tflpo and theoretical tflpo
+                theoretical_tflops = get_device_flops()
+                step_time = float(timing_raw.get("step", 0.0))
+                if np.isfinite(theoretical_tflops) and step_time > 0.0:
+                    weighted_mfu = 0.0
+                    if "perf/mfu/actor" in metrics:
+                        weighted_mfu += float(metrics["perf/mfu/actor"]) * float(timing_raw.get("update_actor", 0.0))
+                    if "perf/mfu/actor_infer" in metrics:
+                        weighted_mfu += float(metrics["perf/mfu/actor_infer"]) * float(
+                            timing_raw.get("old_log_prob", 0.0)
+                        )
+                    metrics["perf/actual_tflops_per_gpu"] = weighted_mfu * theoretical_tflops / step_time
+                    metrics["perf/theoretical_tflops_per_gpu"] = theoretical_tflops
                 n_gpus = self.resource_pool_manager.get_n_gpus()
                 metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))
                 timing_raw = defaultdict(float)  # clear timing

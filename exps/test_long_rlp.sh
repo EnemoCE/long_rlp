@@ -128,7 +128,11 @@ n_resp_per_prompt=$(python -c "print(min($scale_factor * $DP,16))")
 ppo_mini_batch_size=$((15*n_resp_per_prompt)) # divisible by rollout.n for stable in-actor RLOO grouping
 train_batch_size=$((2*ppo_mini_batch_size)) #should be divisble by ppo_mini_batch_size
 
-
+scale_factor=1
+ppo_micro_batch_size_per_gpu=1
+n_resp_per_prompt=2
+ppo_mini_batch_size=2
+train_batch_size=2
 
 
 # dapo reward manager params
