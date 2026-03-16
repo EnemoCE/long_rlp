@@ -489,7 +489,9 @@ class DataParallelRPTActor(DataParallelPPOActor):
         response_mask = mini_batch.batch["response_mask"]
         last_idx = (response_mask.sum(dim=-1).long() - 1).clamp(min=0)
         for i in range(response_mask.size(0)):
-            mini_batch.batch["advantages"][i, last_idx[i] :] = self.length_penalty
+            # Keep the terminal thought token intact: that is where the scalar
+            # RPT reward lands. Only tokens after it should get the penalty.
+            mini_batch.batch["advantages"][i, last_idx[i] + 1 :] = self.length_penalty
 
     def _compute_reward_lp_minibatch(self, mini_batch: DataProto) -> DataProto:
         """Compute the full RPT reward tensors for one PPO mini-batch.
@@ -650,7 +652,6 @@ class DataParallelRPTActor(DataParallelPPOActor):
                     response_mask = model_inputs["response_mask"]
                     old_log_prob = model_inputs["old_log_probs"]
                     advantages = model_inputs["advantages"]
-                    metrics["advantages"] = advantages
 
                     entropy_coeff = self.config.entropy_coeff
                     loss_agg_mode = self.config.loss_agg_mode
