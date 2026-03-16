@@ -424,6 +424,11 @@ class RayRPTTrainer(RayPPOTrainer):
                 num_gen_batches = 0
 
                 # TODO: make a canonical logger that supports various backend
+                for key, value in metrics:
+                    if type(value) == np.float64:
+                        metrics[key] = float(value)
+                    if type(value) == np.int32:
+                        metrics[key] = int(value)
                 logger.log(data=metrics, step=self.global_steps)
 
                 if is_last_step:

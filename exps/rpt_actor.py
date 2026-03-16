@@ -625,6 +625,8 @@ class DataParallelRPTActor(DataParallelPPOActor):
                     num_repeat=num_repeat,
                     norm_adv_by_std_in_grpo=norm_adv_by_std,
                 )
+                
+
                 self._set_overlong_advantages(mini_batch)
 
                 if epoch_idx == 0:
@@ -648,6 +650,7 @@ class DataParallelRPTActor(DataParallelPPOActor):
                     response_mask = model_inputs["response_mask"]
                     old_log_prob = model_inputs["old_log_probs"]
                     advantages = model_inputs["advantages"]
+                    metrics["advantages"] = advantages
 
                     entropy_coeff = self.config.entropy_coeff
                     loss_agg_mode = self.config.loss_agg_mode
