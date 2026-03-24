@@ -79,7 +79,7 @@ def make_thought_mask(
 
     has = matches.any(dim=-1)
     first = matches.int().argmax(dim=-1)
-    end_pos = torch.where(has, first + m, valid_len)
+    end_pos = torch.where(has, first + m + 1, valid_len)
 
     pos = torch.arange(rlen, device=device)[None, :]
     return (pos < end_pos[:, None]).to(dtype)
