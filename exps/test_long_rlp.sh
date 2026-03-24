@@ -62,7 +62,7 @@ gpu_memory_utilization=0.8
 shuffle_dataset=true
 first_time_dataset_prep=false # prepare dataset
 
-test_freq=10
+test_freq=0
 save_freq=10
 total_epochs=10
 total_training_steps=5

@@ -629,7 +629,7 @@ class DataParallelRPTActor(DataParallelPPOActor):
                 )
                 
 
-                self._set_overlong_advantages(mini_batch)
+                #self._set_overlong_advantages(mini_batch)
 
                 if epoch_idx == 0:
                     updated_mini_batches.append(mini_batch)
