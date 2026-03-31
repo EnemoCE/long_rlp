@@ -554,6 +554,8 @@ class DataParallelRPTActor(DataParallelPPOActor):
 
         mini_batch.batch["token_level_scores"] = reward_tensor.clone()
         mini_batch.batch["token_level_rewards"] = reward_tensor
+        print(reward_tensor)
+        print(thought_mask)
         return mini_batch
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
