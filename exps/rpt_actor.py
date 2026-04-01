@@ -615,11 +615,11 @@ class DataParallelRPTActor(DataParallelPPOActor):
         mini_batch.batch["token_level_scores"] = reward_tensor.clone()
         mini_batch.batch["token_level_rewards"] = reward_tensor
         for i in range(reward_tensor.size(0)):
-            print(reward_tensor[i,:], reward_tensor.shape)
-            print(self.tokenizer.decode(responses[i]))
-            print(mini_batch.non_tensor_batch["uid"][i])
-            print(thought_mask[i,:], thought_mask.shape)
-            print(reward_mask[i,:], reward_mask.shape)
+            print("\n\n\ REWARD_TENSOR", reward_tensor[i,:].sum(dim=-1), reward_tensor.shape)
+            print("\n\n GENERATION",self.tokenizer.decode(responses[i]))
+            print("\n\n UID", mini_batch.non_tensor_batch["uid"][i])
+            print("\n\n\ THOUGHT_MASK", thought_mask[i,:].sum(dim=-1), thought_mask.shape)
+            print("\n\n\ REWARD_MASK", reward_mask[i,:].sum(dim=-1), reward_mask.shape)
         return mini_batch
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
