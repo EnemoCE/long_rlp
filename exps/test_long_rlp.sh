@@ -140,6 +140,7 @@ enable_overlong_buffer=true
 overlong_buffer_len=0
 overlong_penalty_factor=1.0
 answer_overlong_penalty_factor=1.0
+drop_think_text="'<think>\n\n</think>\n\n####'"
 
 # Paths and namings
 exp_number=1
@@ -359,7 +360,7 @@ ray job submit --no-wait --submission-id "$JOB_ID" --runtime-env="${RUNTIME_ENV}
     actor_rollout_ref.rpt.ema_tau=0.999 \
     actor_rollout_ref.rpt.length_penalty=0.0 \
     actor_rollout_ref.rpt.answer_overlong_penalty_factor=${answer_overlong_penalty_factor} \
-    actor_rollout_ref.rpt.drop_think_text='<think>\n\n</think>\n\n####' \
+    actor_rollout_ref.rpt.drop_think_text="${drop_think_text}" \
     $@
 
 # blocks until the job finishes
