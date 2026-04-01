@@ -59,7 +59,7 @@ offload=false # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
 rollout_mode=async
 gpu_memory_utilization=0.8
-shuffle_dataset=true
+shuffle_dataset=false
 first_time_dataset_prep=false # prepare dataset
 
 test_freq=0
@@ -79,7 +79,7 @@ clip_ratio_high=0.0004 # as recommended by the paper, see Sec. 5.1
 #estimated as a real limit for omni_math prompts - NEVER CHANGE
 max_prompt_length=1024
 #recommended completion length from RLP NVIDIA paper - don't change
-max_response_length=2048
+max_response_length=3072
 context_len=$((max_prompt_length + max_response_length))
 
 #always 1
@@ -136,9 +136,10 @@ train_batch_size=2
 
 
 # dapo reward manager params
-enable_overlong_buffer=false # true
-overlong_buffer_len=$((512))
-overlong_penalty_factor=0
+enable_overlong_buffer=true
+overlong_buffer_len=0
+overlong_penalty_factor=1.0
+answer_overlong_penalty_factor=1.0
 
 # Paths and namings
 exp_number=1
@@ -243,6 +244,15 @@ python "${REPO_ROOT}/exps/scripts/jinja_template_in_config.py" \
 omni_math_train_path="${DATA_DIR}/train.parquet"
 omni_math_test_path="${DATA_DIR}/test.parquet"
 
+avg_gt_answer_len="$(
+  python "${REPO_ROOT}/exps/scripts/compute_avg_gt_answer_length.py" \
+    --dataset "${omni_math_train_path}" \
+    --tokenizer "${MODEL_PATH}"
+)"
+overlong_buffer_len=$((10 * avg_gt_answer_len))
+echo "avg_gt_answer_len=${avg_gt_answer_len}"
+echo "overlong_buffer_len=${overlong_buffer_len}"
+
 #TEMPLATE_PATH="${HOME}/verl/exps/custom_template.jinja"
 
 #TEMPLATE="$(cat "$TEMPLATE_PATH")"
@@ -324,6 +334,9 @@ ray job submit --no-wait --submission-id "$JOB_ID" --runtime-env="${RUNTIME_ENV}
     actor_rollout_ref.ref.ulysses_sequence_parallel_size=${sp_size} \
     actor_rollout_ref.actor.entropy_checkpointing=${entropy_checkpointing} \
     reward_model.reward_manager=${reward_manager} \
+    reward_model.overlong_buffer.enable=${enable_overlong_buffer} \
+    reward_model.overlong_buffer.len=${overlong_buffer_len} \
+    reward_model.overlong_buffer.penalty_factor=${overlong_penalty_factor} \
     +reward_model.reward_kwargs.overlong_buffer_cfg.enable=${enable_overlong_buffer} \
     +reward_model.reward_kwargs.overlong_buffer_cfg.len=${overlong_buffer_len} \
     +reward_model.reward_kwargs.overlong_buffer_cfg.penalty_factor=${overlong_penalty_factor} \
@@ -345,6 +358,8 @@ ray job submit --no-wait --submission-id "$JOB_ID" --runtime-env="${RUNTIME_ENV}
     trainer.log_val_generations=2 \
     actor_rollout_ref.rpt.ema_tau=0.999 \
     actor_rollout_ref.rpt.length_penalty=0.0 \
+    actor_rollout_ref.rpt.answer_overlong_penalty_factor=${answer_overlong_penalty_factor} \
+    actor_rollout_ref.rpt.drop_think_text='<think>\n\n</think>\n\n####' \
     $@
 
 # blocks until the job finishes

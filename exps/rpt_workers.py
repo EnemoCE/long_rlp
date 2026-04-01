@@ -9,7 +9,7 @@ The worker is responsible for passing the runtime pieces that the actor cannot
 discover by itself:
 
 - tokenizer
-- token ids for ``</think>``
+- token ids for the answer delimiter
 - ``actor_rollout_ref.rpt.ema_tau``
 - ``actor_rollout_ref.rpt.length_penalty``
 - ``actor_rollout_ref.rpt.drop_think_text``
@@ -64,7 +64,7 @@ class AsyncThoughtMaskActorRolloutRefWorker(AsyncActorRolloutRefWorker):
         The actor receives:
 
         - the tokenizer
-        - ``</think>`` token ids for thought masking
+        - answer delimiter token ids for thought masking
         - EMA decay ``ema_tau``
         - experimental ``length_penalty``
         - the empty-think template used for the EMA baseline prompt
@@ -80,10 +80,14 @@ class AsyncThoughtMaskActorRolloutRefWorker(AsyncActorRolloutRefWorker):
             )
 
             rpt_cfg = self.config.get("rpt", {})
+            reward_model_cfg = self.config.get("reward_model", {})
+            reward_cfg = reward_model_cfg.get("overlong_buffer", {})
+            reward_cfg = reward_model_cfg.get("reward_kwargs", {}).get("overlong_buffer_cfg", reward_cfg)
             ema_tau = float(rpt_cfg.get("ema_tau", 0.999))
             length_penalty = float(rpt_cfg.get("length_penalty", 0.0))
-            drop_think_text = str(rpt_cfg.get("drop_think_text", "<think>\n\n</think>\n\n"))
-            end_think_ids = self.tokenizer.encode("</think>", add_special_tokens=False)
+            answer_overlong_penalty_factor = float(rpt_cfg.get("answer_overlong_penalty_factor", 0.0))
+            drop_think_text = str(rpt_cfg.get("drop_think_text", "<think>\n\n</think>\n\n####"))
+            end_think_ids = self.tokenizer.encode("####", add_special_tokens=False)
 
             self.actor.setup_rpt(
                 tokenizer=self.tokenizer,
@@ -91,6 +95,10 @@ class AsyncThoughtMaskActorRolloutRefWorker(AsyncActorRolloutRefWorker):
                 ema_tau=ema_tau,
                 length_penalty=length_penalty,
                 drop_think_text=drop_think_text,
+                overlong_buffer_enable=bool(reward_cfg.get("enable", False)),
+                overlong_buffer_len=int(reward_cfg.get("len", 0)),
+                thought_overlong_penalty_factor=float(reward_cfg.get("penalty_factor", 0.0)),
+                answer_overlong_penalty_factor=answer_overlong_penalty_factor,
             )
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))

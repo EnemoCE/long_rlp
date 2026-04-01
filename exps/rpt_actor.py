@@ -3,7 +3,7 @@
 This file contains the main deviation from stock PPO. Reward and advantage are
 not produced in the trainer before ``update_actor``. Instead, the actor:
 
-1. builds a thought-only mask ending at the first ``</think>``
+1. builds a thought-only mask ending at the answer delimiter
 2. computes ``logp_actor(ground_truth | prompt + generated_thought)``
 3. computes ``logp_ema(ground_truth | prompt + empty_think)``
 4. places the scalar reward on the last thought token
@@ -18,7 +18,7 @@ policy update, the EMA teacher would be stale for later mini-batches.
 There is also an intentional mask split in this project:
 
 - trainer-side old/ref log-prob bookkeeping uses the full generated response
-- actor-side RPT reward uses only the thought region through ``</think>``
+- actor-side RPT reward uses only the thought region through the answer delimiter
 """
 
 import contextlib
@@ -50,10 +50,10 @@ def make_thought_mask(
     response_attn: torch.Tensor,
     dtype: torch.dtype,
 ) -> torch.Tensor:
-    """Return a thought-only response mask ending at the first ``</think>``.
+    """Return a thought-only response mask ending at the first delimiter span.
 
     The mask is ``1`` from the start of the generated response through the
-    closing ``</think>`` token span and ``0`` after that. If the delimiter is
+    delimiter token span and ``0`` after that. If the delimiter is
     not found, the mask falls back to the valid response length from
     ``response_attn`` instead of zeroing the sample out.
 
@@ -79,7 +79,7 @@ def make_thought_mask(
 
     has = matches.any(dim=-1)
     first = matches.int().argmax(dim=-1)
-    end_pos = torch.where(has, first + m + 1, valid_len)
+    end_pos = torch.where(has, first + m, valid_len)
 
     pos = torch.arange(rlen, device=device)[None, :]
     return (pos < end_pos[:, None]).to(dtype)
@@ -102,12 +102,27 @@ class DataParallelRPTActor(DataParallelPPOActor):
         super().__init__(config=config, actor_module=actor_module, actor_optimizer=actor_optimizer)
         self.tokenizer = None
         self.end_think_ids: list[int] = []
-        self.drop_think_text = "<think>\n\n</think>\n\n"
+        self.drop_think_text = "<think>\n\n</think>\n\n####"
         self.ema_tau = 0.999
         self.length_penalty = 0.0
+        self.overlong_buffer_enable = False
+        self.overlong_buffer_len = 0
+        self.thought_overlong_penalty_factor = 0.0
+        self.answer_overlong_penalty_factor = 0.0
         self.ema_module = None
 
-    def setup_rpt(self, tokenizer, end_think_ids: list[int], ema_tau: float, length_penalty: float, drop_think_text: str):
+    def setup_rpt(
+        self,
+        tokenizer,
+        end_think_ids: list[int],
+        ema_tau: float,
+        length_penalty: float,
+        drop_think_text: str,
+        overlong_buffer_enable: bool = False,
+        overlong_buffer_len: int = 0,
+        thought_overlong_penalty_factor: float = 0.0,
+        answer_overlong_penalty_factor: float = 0.0,
+    ):
         """Store RPT runtime state and initialize the EMA teacher copy."""
         self.tokenizer = tokenizer
         self.end_think_ids = list(end_think_ids)
@@ -115,6 +130,10 @@ class DataParallelRPTActor(DataParallelPPOActor):
         self.length_penalty = float(length_penalty)
         if drop_think_text:
             self.drop_think_text = drop_think_text
+        self.overlong_buffer_enable = bool(overlong_buffer_enable)
+        self.overlong_buffer_len = max(int(overlong_buffer_len), 0)
+        self.thought_overlong_penalty_factor = float(thought_overlong_penalty_factor)
+        self.answer_overlong_penalty_factor = float(answer_overlong_penalty_factor)
         self.init_ema_from_actor()
 
     def _get_ema_source_module(self):
@@ -261,6 +280,19 @@ class DataParallelRPTActor(DataParallelPPOActor):
 
         raise KeyError("ground truth not found in non_tensor_batch['reward_model'] nor ['gt_text']")
 
+    def _extract_ground_truth_token_ids(self, batch: DataProto) -> list[list[int]]:
+        """Tokenize the ground-truth answers once so reward code can reuse them."""
+        gt_texts = self._extract_ground_truth(batch)
+        eos_id = self.tokenizer.eos_token_id if self.tokenizer.eos_token_id is not None else 0
+
+        gt_token_ids: list[list[int]] = []
+        for text in gt_texts:
+            token_ids = self.tokenizer.encode(text, add_special_tokens=False)
+            if not token_ids:
+                token_ids = [eos_id]
+            gt_token_ids.append(token_ids)
+        return gt_token_ids
+
     @torch.no_grad()
     def compute_gt_logprob(self, batch: DataProto, which: str = "actor") -> DataProto:
         """Compute summed log-prob of the known target continuation.
@@ -296,7 +328,7 @@ class DataParallelRPTActor(DataParallelPPOActor):
         resp_len = responses.size(1)
         prompt_cut = seq_len - resp_len
 
-        gt_texts = self._extract_ground_truth(batch)
+        gt_token_ids = self._extract_ground_truth_token_ids(batch)
 
         prefix_list = []
         suffix_list = []
@@ -309,10 +341,7 @@ class DataParallelRPTActor(DataParallelPPOActor):
             thought_ids = input_ids[i, prompt_cut : prompt_cut + thought_len_i]
             prefix_ids = torch.cat([prompt_ids, thought_ids], dim=0)
 
-            suffix_token_ids = self.tokenizer.encode(gt_texts[i], add_special_tokens=False)
-            if len(suffix_token_ids) == 0:
-                eos_id = self.tokenizer.eos_token_id if self.tokenizer.eos_token_id is not None else 0
-                suffix_token_ids = [eos_id]
+            suffix_token_ids = gt_token_ids[i]
             suffix_ids = torch.tensor(suffix_token_ids, device=input_ids.device, dtype=input_ids.dtype)
 
             prefix_list.append(prefix_ids)
@@ -482,15 +511,19 @@ class DataParallelRPTActor(DataParallelPPOActor):
         return ema_batch, inverse_index
 
     def _set_overlong_advantages(self, mini_batch: DataProto):
-        """Experimental hook for penalizing advantages after the thought end."""
+        """Experimental hook for penalizing advantages after expected ground truth answer length.
+
+        Once ``response_mask`` is extended to include the expected answer span,
+        any tokens after that window correspond to excessive generated answer
+        tokens. This hook applies a separate token-level penalty to those
+        overlong answer positions via the advantage tensor.
+        """
         if self.length_penalty == 0.0 or "advantages" not in mini_batch.batch.keys():
             return
 
-        response_mask = mini_batch.batch["response_mask"]
-        last_idx = (response_mask.sum(dim=-1).long() - 1).clamp(min=0)
-        for i in range(response_mask.size(0)):
-            # Keep the terminal thought token intact: that is where the scalar
-            # RPT reward lands. Only tokens after it should get the penalty.
+        reward_mask = mini_batch.batch["response_mask"]
+        last_idx = (reward_mask.sum(dim=-1).long() - 1).clamp(min=0)
+        for i in range(reward_mask.size(0)):
             mini_batch.batch["advantages"][i, last_idx[i] + 1 :] = self.length_penalty
 
     def _compute_reward_lp_minibatch(self, mini_batch: DataProto) -> DataProto:
@@ -520,6 +553,7 @@ class DataParallelRPTActor(DataParallelPPOActor):
             dtype=attn_full.dtype,
         )
         mini_batch.batch["response_mask"] = thought_mask
+        gt_token_ids = self._extract_ground_truth_token_ids(mini_batch)
 
         micro_bsz = self.config.ppo_micro_batch_size_per_gpu or len(mini_batch)
         micro_batches = mini_batch.split(micro_bsz)
@@ -546,9 +580,35 @@ class DataParallelRPTActor(DataParallelPPOActor):
         mini_batch.batch["ema_gt_logprob_sum"] = ema_lp
 
         reward = think_lp - ema_lp
+        thought_len = thought_mask.sum(dim=-1).long()
+        valid_response_length = response_attn.sum(dim=-1).long()
+        generated_answer_len = (valid_response_length - thought_len).clamp(min=0)
+        gt_answer_len = torch.tensor(
+            [len(token_ids) for token_ids in gt_token_ids],
+            device=reward.device,
+            dtype=torch.long,
+        )
+
+        if self.overlong_buffer_enable and self.overlong_buffer_len > 0 and self.thought_overlong_penalty_factor > 0.0:
+            expected_thought_len = max(responses.size(1) - self.overlong_buffer_len, 0)
+            exceed_len = (thought_len - expected_thought_len).clamp(min=0).to(reward.dtype)
+            thought_penalty = -(exceed_len / float(self.overlong_buffer_len)) * self.thought_overlong_penalty_factor
+            reward = reward + thought_penalty
+
+        if self.answer_overlong_penalty_factor > 0.0:
+            answer_exceed = (generated_answer_len - gt_answer_len).clamp(min=0).to(reward.dtype)
+            answer_scale = gt_answer_len.clamp(min=1).to(reward.dtype)
+            answer_penalty = -(answer_exceed / answer_scale) * self.answer_overlong_penalty_factor
+            reward = reward + answer_penalty
+
+        reward_span_len = torch.minimum(valid_response_length, thought_len + gt_answer_len)
+        pos = torch.arange(resp_len, device=responses.device)[None, :]
+        reward_mask = (pos < reward_span_len[:, None]).to(response_attn.dtype)
+        mini_batch.batch["response_mask"] = reward_mask
+
         bsz = mini_batch.batch["responses"].size(0)
         reward_tensor = torch.zeros_like(mini_batch.batch["responses"], dtype=torch.float32)
-        last_idx = (thought_mask.sum(dim=-1).long() - 1).clamp(min=0)
+        last_idx = (thought_len - 1).clamp(min=0)
         row = torch.arange(bsz, device=last_idx.device)
         reward_tensor[row, last_idx] = reward.float()
 
@@ -559,6 +619,7 @@ class DataParallelRPTActor(DataParallelPPOActor):
             print(self.tokenizer.decode(responses[i]))
             print(mini_batch.non_tensor_batch["uid"][i])
             print(thought_mask[i,:], thought_mask.shape)
+            print(reward_mask[i,:], reward_mask.shape)
         return mini_batch
 
     @GPUMemoryLogger(role="dp actor", logger=logger)

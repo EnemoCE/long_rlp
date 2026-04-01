@@ -73,7 +73,7 @@ class RayRPTTrainer(RayPPOTrainer):
         """Return either a full-response or thought-only response mask.
 
         When ``think=True`` this helper truncates the response at the first
-        ``</think>`` token span. When ``think=False`` it simply returns the full
+        ``####`` token span. When ``think=False`` it simply returns the full
         response-valid portion of ``attention_mask``.
 
         The current trainer deliberately calls this with ``think=False`` inside
@@ -88,7 +88,7 @@ class RayRPTTrainer(RayPPOTrainer):
         if not think:
             return response_mask
 
-        end_think_ids = self.tokenizer.encode("</think>", add_special_tokens=False)
+        end_think_ids = self.tokenizer.encode("####", add_special_tokens=False)
         return make_thought_mask(
             responses=responses,
             end_think_ids=end_think_ids,

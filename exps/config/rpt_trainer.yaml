@@ -13,7 +13,7 @@ reward_model:
   use_reward_loop: false
   reward_manager: dapo
   overlong_buffer:
-    enable: false # We try to avoid forgetting to set enable
+    enable: false # launcher overrides this for debug runs
     len: 0
     penalty_factor: 0.0
     log: false
@@ -32,7 +32,8 @@ actor_rollout_ref:
   rpt:
     ema_tau: 0.999
     length_penalty: 0.0
-    drop_think_text: "<think>\n\n</think>\n\n"
+    answer_overlong_penalty_factor: 1.0
+    drop_think_text: "<think>\n\n</think>\n\n####"
   model:
     custom_chat_template: |
       {%- if tools -%}
