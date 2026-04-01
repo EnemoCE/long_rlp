@@ -556,6 +556,7 @@ class DataParallelRPTActor(DataParallelPPOActor):
         mini_batch.batch["token_level_rewards"] = reward_tensor
         for i in range(reward_tensor.size(0)):
             print(reward_tensor[i,:], reward_tensor.shape)
+            print(self.tokenizer.decode(responses[i]))
             print(mini_batch.non_tensor_batch["uid"][i])
             print(thought_mask[i,:], thought_mask.shape)
         return mini_batch
