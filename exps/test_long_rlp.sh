@@ -62,7 +62,7 @@ gpu_memory_utilization=0.8
 shuffle_dataset=true
 first_time_dataset_prep=false # prepare dataset
 
-test_freq=10
+test_freq=0
 save_freq=10
 total_epochs=10
 total_training_steps=5
@@ -128,7 +128,11 @@ n_resp_per_prompt=$(python -c "print(min($scale_factor * $DP,16))")
 ppo_mini_batch_size=$((15*n_resp_per_prompt)) # divisible by rollout.n for stable in-actor RLOO grouping
 train_batch_size=$((2*ppo_mini_batch_size)) #should be divisble by ppo_mini_batch_size
 
-
+scale_factor=1
+ppo_micro_batch_size_per_gpu=1
+n_resp_per_prompt=2
+ppo_mini_batch_size=2
+train_batch_size=2
 
 
 # dapo reward manager params
@@ -337,7 +341,7 @@ ray job submit --no-wait --submission-id "$JOB_ID" --runtime-env="${RUNTIME_ENV}
     trainer.total_epochs=${total_epochs} \
     trainer.total_training_steps=${total_training_steps} \
     trainer.default_local_dir="${CKPTS_DIR}" \
-    trainer.resume_mode=auto \
+    trainer.resume_mode="disable" \
     trainer.log_val_generations=2 \
     actor_rollout_ref.rpt.ema_tau=0.999 \
     actor_rollout_ref.rpt.length_penalty=0.0 \

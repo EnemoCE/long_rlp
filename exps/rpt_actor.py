@@ -79,7 +79,7 @@ def make_thought_mask(
 
     has = matches.any(dim=-1)
     first = matches.int().argmax(dim=-1)
-    end_pos = torch.where(has, first + m, valid_len)
+    end_pos = torch.where(has, first + m + 1, valid_len)
 
     pos = torch.arange(rlen, device=device)[None, :]
     return (pos < end_pos[:, None]).to(dtype)
@@ -147,6 +147,13 @@ class DataParallelRPTActor(DataParallelPPOActor):
             tensor = tensor.full_tensor()
         return tensor.detach().cpu().clone()
 
+    @staticmethod
+    def _detach_tensor_view(tensor: torch.Tensor) -> torch.Tensor:
+        """Convert DTensor-like values into detached dense tensors for EMA math."""
+        if hasattr(tensor, "full_tensor"):
+            tensor = tensor.full_tensor()
+        return tensor.detach()
+
     @torch.no_grad()
     def init_ema_from_actor(self):
         """Initialize the EMA module from the unwrapped actor state dict.
@@ -176,6 +183,17 @@ class DataParallelRPTActor(DataParallelPPOActor):
         for p in self.ema_module.parameters():
             p.requires_grad_(False)
 
+    def _named_actor_params(self) -> dict[str, torch.Tensor]:
+        """Collect actor params in the same key space used by EMA init."""
+        source_module = self._get_ema_source_module()
+        actor_state = source_module.state_dict()
+        ema_param_names = {name for name, _ in self.ema_module.named_parameters()}
+        return {
+            name: self._detach_tensor_view(tensor)
+            for name, tensor in actor_state.items()
+            if name in ema_param_names and "_flat_param" not in name
+        }
+
     @torch.no_grad()
     def ema_update(self, tau: float):
         """Update the EMA teacher after each optimizer step.
@@ -187,9 +205,13 @@ class DataParallelRPTActor(DataParallelPPOActor):
         if self.ema_module is None:
             self.init_ema_from_actor()
         with self._ema_actor_param_ctx():
-            source_module = self._get_ema_source_module()
-            for ep, p in zip(self.ema_module.parameters(), source_module.parameters()):
-                actor_param = p.full_tensor() if hasattr(p, "full_tensor") else p.data
+            actor_params = self._named_actor_params()
+            for name, ep in self.ema_module.named_parameters():
+                actor_param = actor_params[name]
+                if ep.shape != actor_param.shape:
+                    raise RuntimeError(
+                        f"EMA parameter shape mismatch for {name}: ema={tuple(ep.shape)} actor={tuple(actor_param.shape)}"
+                    )
                 ep.data.mul_(tau).add_(actor_param.to(device=ep.device, dtype=ep.dtype), alpha=(1.0 - tau))
 
     def _forward_micro_batch_with_module(
@@ -467,7 +489,9 @@ class DataParallelRPTActor(DataParallelPPOActor):
         response_mask = mini_batch.batch["response_mask"]
         last_idx = (response_mask.sum(dim=-1).long() - 1).clamp(min=0)
         for i in range(response_mask.size(0)):
-            mini_batch.batch["advantages"][i, last_idx[i] :] = self.length_penalty
+            # Keep the terminal thought token intact: that is where the scalar
+            # RPT reward lands. Only tokens after it should get the penalty.
+            mini_batch.batch["advantages"][i, last_idx[i] + 1 :] = self.length_penalty
 
     def _compute_reward_lp_minibatch(self, mini_batch: DataProto) -> DataProto:
         """Compute the full RPT reward tensors for one PPO mini-batch.
@@ -530,6 +554,11 @@ class DataParallelRPTActor(DataParallelPPOActor):
 
         mini_batch.batch["token_level_scores"] = reward_tensor.clone()
         mini_batch.batch["token_level_rewards"] = reward_tensor
+        for i in range(reward_tensor.size(0)):
+            print(reward_tensor[i,:], reward_tensor.shape)
+            print(self.tokenizer.decode(responses[i]))
+            print(mini_batch.non_tensor_batch["uid"][i])
+            print(thought_mask[i,:], thought_mask.shape)
         return mini_batch
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
@@ -603,7 +632,9 @@ class DataParallelRPTActor(DataParallelPPOActor):
                     num_repeat=num_repeat,
                     norm_adv_by_std_in_grpo=norm_adv_by_std,
                 )
-                self._set_overlong_advantages(mini_batch)
+                
+
+                #self._set_overlong_advantages(mini_batch)
 
                 if epoch_idx == 0:
                     updated_mini_batches.append(mini_batch)
