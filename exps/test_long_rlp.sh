@@ -357,7 +357,7 @@ ray job submit --no-wait --submission-id "$JOB_ID" --runtime-env="${RUNTIME_ENV}
     trainer.resume_mode="disable" \
     trainer.log_val_generations=2 \
     actor_rollout_ref.rpt.ema_tau=0.999 \
-    actor_rollout_ref.rpt.length_penalty=0.0 \
+    actor_rollout_ref.rpt.length_penalty=1.5 \
     actor_rollout_ref.rpt.answer_overlong_penalty_factor=${answer_overlong_penalty_factor} \
     $@
 

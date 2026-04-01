@@ -524,7 +524,7 @@ class DataParallelRPTActor(DataParallelPPOActor):
         reward_mask = mini_batch.batch["response_mask"]
         last_idx = (reward_mask.sum(dim=-1).long() - 1).clamp(min=0)
         for i in range(reward_mask.size(0)):
-            mini_batch.batch["advantages"][i, last_idx[i] + 1 :] = self.length_penalty
+            mini_batch.batch["advantages"][i, last_idx[i] + 1 :] = -self.length_penalty *  abs(mini_batch.batch["advantages"][i, last_idx[i]].float())
 
     def _compute_reward_lp_minibatch(self, mini_batch: DataProto) -> DataProto:
         """Compute the full RPT reward tensors for one PPO mini-batch.
@@ -696,7 +696,7 @@ class DataParallelRPTActor(DataParallelPPOActor):
                 )
                 
 
-                #self._set_overlong_advantages(mini_batch)
+                self._set_overlong_advantages(mini_batch)
 
                 if epoch_idx == 0:
                     updated_mini_batches.append(mini_batch)
