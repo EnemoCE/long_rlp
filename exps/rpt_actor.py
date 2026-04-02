@@ -394,7 +394,8 @@ class DataParallelRPTActor(DataParallelPPOActor):
             temperature=1.0,
             calculate_entropy=False,
         )
-        lp_sum = (token_lp * new_rmask.to(token_lp.dtype)).sum(dim=-1)
+        valid_token_lp = torch.where(new_rmask.to(token_lp.dtype).bool(), token_lp, 0.0)
+        lp_sum = (valid_token_lp * new_rmask).sum(dim=-1)/(new_rmask.sum(dim=-1) + 1e-8)
 
         return DataProto.from_dict(tensors={"gt_logprob_sum": lp_sum})
 
