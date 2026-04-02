@@ -225,6 +225,10 @@ class RayRPTTrainer(RayPPOTrainer):
             val_metrics = self._validate()
             assert val_metrics, f"{val_metrics=}"
             pprint(f"Initial validation metrics: {val_metrics}")
+            # Convert NumPy scalars before sending metrics to JSON loggers.
+            for key, value in list(val_metrics.items()):
+                if isinstance(value, np.generic):
+                    val_metrics[key] = value.item()
             logger.log(data=val_metrics, step=self.global_steps)
             if self.config.trainer.get("val_only", False):
                 return
