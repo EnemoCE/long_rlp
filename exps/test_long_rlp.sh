@@ -61,8 +61,9 @@ rollout_mode=async
 gpu_memory_utilization=0.8
 shuffle_dataset=false
 first_time_dataset_prep=false # prepare dataset
+first_time_val_dataset_prep=false # prepare GSM8K validation dataset
 
-test_freq=0
+test_freq=10
 save_freq=10
 total_epochs=10
 total_training_steps=5
@@ -128,11 +129,11 @@ n_resp_per_prompt=$(python -c "print(min($scale_factor * $DP,8))")
 ppo_mini_batch_size=$((15*n_resp_per_prompt)) # divisible by rollout.n for stable in-actor RLOO grouping
 train_batch_size=$((2*ppo_mini_batch_size)) #should be divisble by ppo_mini_batch_size
 
-scale_factor=1
-ppo_micro_batch_size_per_gpu=1
-n_resp_per_prompt=2
-ppo_mini_batch_size=2
-train_batch_size=2
+# scale_factor=1
+# ppo_micro_batch_size_per_gpu=1
+# n_resp_per_prompt=2
+# ppo_mini_batch_size=2
+# train_batch_size=2
 
 
 # dapo reward manager params
@@ -148,6 +149,8 @@ exp_name="${loss_mode}-epslow-${clip_ratio_low}-epshigh-${clip_ratio_high}-${SFT
 #CKPTS_DIR=/rl/checkpoints/experimental/4b/${loss_mode}/${exp_name}
 DATA_DIR=${DATA_DIR:-"${REPO_ROOT}/exps/dataset/Omni-MATH-final"}
 DATA_PREP_SCRIPT="${REPO_ROOT}/exps/data_preprocessing/prepare_omni_math_dataset.sh"
+VAL_DATA_DIR=${VAL_DATA_DIR:-"${REPO_ROOT}/dataset/gsm8k"}
+VAL_DATA_PREP_SCRIPT="${REPO_ROOT}/examples/data_preprocess/gsm8k.py"
 CKPTS_DIR=${CKPTS_DIR:-${REPO_ROOT}/ckpts/RL-Long-RLP_${exp_number}}
 WORKING_DIR=${WORKING_DIR:-"${REPO_ROOT}"}
 LOGS_DIR=${REPO_ROOT}/logs_${exp_number}
@@ -236,13 +239,18 @@ if [ "$first_time_dataset_prep" = true ]; then
     bash "${DATA_PREP_SCRIPT}"
 fi
 
+if [ "$first_time_val_dataset_prep" = true ]; then
+    echo "Preprocessing GSM8K dataset..."
+    python "${VAL_DATA_PREP_SCRIPT}" --local_save_dir "${VAL_DATA_DIR}"
+fi
+
 python "${REPO_ROOT}/exps/scripts/jinja_template_in_config.py" \
     --yaml "${REPO_ROOT}/exps/config/rpt_trainer.yaml" \
     --jinja "${REPO_ROOT}/exps/jinja/rpt_template.jinja"
 
 
 omni_math_train_path="${DATA_DIR}/train.parquet"
-omni_math_test_path="${DATA_DIR}/test.parquet"
+gsm8k_test_path="${VAL_DATA_DIR}/test.parquet"
 
 avg_gt_answer_len="$(
   python "${REPO_ROOT}/exps/scripts/compute_avg_gt_answer_length.py" \
@@ -262,7 +270,7 @@ echo "overlong_buffer_len=${overlong_buffer_len}"
 
 # set the paths
 train_files="['$omni_math_train_path']"
-test_files="['$omni_math_test_path']"
+test_files="['$gsm8k_test_path']"
 
 : > "$SENTINEL"                 # 1) create sentinel
 clean_loop & CLEAN_PID=$!    # 2) launch cleaner in background
