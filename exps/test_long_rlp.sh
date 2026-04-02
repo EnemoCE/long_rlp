@@ -61,9 +61,9 @@ rollout_mode=async
 gpu_memory_utilization=0.8
 shuffle_dataset=false
 first_time_dataset_prep=false # prepare dataset
-first_time_val_dataset_prep=false # prepare GSM8K validation dataset
+first_time_val_dataset_prep=true # prepare GSM8K validation dataset
 
-test_freq=10
+test_freq=1
 save_freq=10
 total_epochs=10
 total_training_steps=5
