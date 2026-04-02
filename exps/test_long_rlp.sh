@@ -63,10 +63,10 @@ shuffle_dataset=false
 first_time_dataset_prep=false # prepare dataset
 first_time_val_dataset_prep=true # prepare GSM8K validation dataset
 
-test_freq=1
+test_freq=5
 save_freq=10
 total_epochs=10
-total_training_steps=5
+total_training_steps=500
 val_before_train=true
 
 use_kl_in_reward=false

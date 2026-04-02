@@ -622,6 +622,7 @@ class DataParallelRPTActor(DataParallelPPOActor):
         #     print("\n\n UID", mini_batch.non_tensor_batch["uid"][i])
         #     print("\n\n\ THOUGHT_MASK", thought_mask[i,:].sum(dim=-1), thought_mask.shape)
         #     print("\n\n\ REWARD_MASK", reward_mask[i,:].sum(dim=-1), reward_mask.shape)
+        
         return mini_batch
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
