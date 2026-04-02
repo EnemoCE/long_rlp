@@ -241,7 +241,10 @@ fi
 
 if [ "$first_time_val_dataset_prep" = true ]; then
     echo "Preprocessing GSM8K dataset..."
-    python "${VAL_DATA_PREP_SCRIPT}" --local_save_dir "${VAL_DATA_DIR}"
+    (
+        cd "${REPO_ROOT}"
+        python -m examples.data_preprocess.gsm8k --local_save_dir "${VAL_DATA_DIR}"
+    )
 fi
 
 python "${REPO_ROOT}/exps/scripts/jinja_template_in_config.py" \
