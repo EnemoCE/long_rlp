@@ -61,7 +61,7 @@ rollout_mode=async
 gpu_memory_utilization=0.8
 shuffle_dataset=false
 first_time_dataset_prep=false # prepare dataset
-first_time_val_dataset_prep=false # prepare GSM8K validation dataset
+first_time_val_dataset_prep=true # prepare GSM8K validation dataset
 
 test_freq=1
 save_freq=10
@@ -149,13 +149,13 @@ exp_name="${loss_mode}-epslow-${clip_ratio_low}-epshigh-${clip_ratio_high}-${SFT
 #CKPTS_DIR=/rl/checkpoints/experimental/4b/${loss_mode}/${exp_name}
 DATA_DIR=${DATA_DIR:-"${REPO_ROOT}/exps/dataset/Omni-MATH-final"}
 DATA_PREP_SCRIPT="${REPO_ROOT}/exps/data_preprocessing/prepare_omni_math_dataset.sh"
-VAL_DATA_DIR=${VAL_DATA_DIR:-"${REPO_ROOT}/dataset/gsm8k"}
+VAL_DATA_DIR=${VAL_DATA_DIR:-"${REPO_ROOT}/exps/dataset/gsm8k"}
 VAL_DATA_PREP_SCRIPT="${REPO_ROOT}/examples/data_preprocess/gsm8k.py"
 CKPTS_DIR=${CKPTS_DIR:-${REPO_ROOT}/ckpts/RL-Long-RLP_${exp_number}}
 WORKING_DIR=${WORKING_DIR:-"${REPO_ROOT}"}
 LOGS_DIR=${REPO_ROOT}/logs_${exp_number}
 RUNTIME_ENV=${RUNTIME_ENV:-"${REPO_ROOT}/exps/config/rpt_runtime_env.yaml"}
-mkdir -p "$DATA_DIR" "$CKPTS_DIR" "$LOGS_DIR"
+mkdir -p "$DATA_DIR" "$VAL_DATA_DIR" "$CKPTS_DIR" "$LOGS_DIR"
 KEEP_LAST=2
 PERIOD_SEC=60
 
