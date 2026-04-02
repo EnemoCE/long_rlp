@@ -149,8 +149,8 @@ exp_name="${loss_mode}-epslow-${clip_ratio_low}-epshigh-${clip_ratio_high}-${SFT
 #CKPTS_DIR=/rl/checkpoints/experimental/4b/${loss_mode}/${exp_name}
 DATA_DIR=${DATA_DIR:-"${REPO_ROOT}/exps/dataset/Omni-MATH-final"}
 DATA_PREP_SCRIPT="${REPO_ROOT}/exps/data_preprocessing/prepare_omni_math_dataset.sh"
-VAL_DATA_DIR=${VAL_DATA_DIR:-"${REPO_ROOT}/exps/dataset/gsm8k"}
-VAL_DATA_PREP_SCRIPT="${REPO_ROOT}/examples/data_preprocess/gsm8k.py"
+VAL_DATA_DIR=${VAL_DATA_DIR:-"${REPO_ROOT}/exps/dataset/gsm8k_boxed_val"}
+VAL_DATA_PREP_SCRIPT="${REPO_ROOT}/exps/scripts/prepare_gsm8k_validation.py"
 CKPTS_DIR=${CKPTS_DIR:-${REPO_ROOT}/ckpts/RL-Long-RLP_${exp_number}}
 WORKING_DIR=${WORKING_DIR:-"${REPO_ROOT}"}
 LOGS_DIR=${REPO_ROOT}/logs_${exp_number}
@@ -241,10 +241,7 @@ fi
 
 if [ "$first_time_val_dataset_prep" = true ]; then
     echo "Preprocessing GSM8K dataset..."
-    (
-        cd "${REPO_ROOT}"
-        python -m examples.data_preprocess.gsm8k --local_save_dir "${VAL_DATA_DIR}"
-    )
+    python "${VAL_DATA_PREP_SCRIPT}" --local_save_dir "${VAL_DATA_DIR}"
 fi
 
 python "${REPO_ROOT}/exps/scripts/jinja_template_in_config.py" \
