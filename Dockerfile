@@ -16,7 +16,7 @@ RUN wget -qO /tmp/miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-la
 WORKDIR /verl
 
 COPY . /verl
-COPY --from=datasets . /opt/datasets
+COPY exps/dataset /opt/datasets
 
 RUN conda create -y -n verl python=3.12 && \
     conda run -n verl pip install -r requirements.txt && \

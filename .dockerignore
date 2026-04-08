@@ -8,5 +8,4 @@ __pycache__/
 logs_*/
 ckpts/
 ray_tmp/
-exps/dataset/
 .hf-cache/
