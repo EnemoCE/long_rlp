@@ -1,0 +1,12 @@
+.git
+.pytest_cache
+.mypy_cache
+.venv
+__pycache__/
+*.pyc
+*.pyo
+logs_*/
+ckpts/
+ray_tmp/
+exps/dataset/
+.hf-cache/

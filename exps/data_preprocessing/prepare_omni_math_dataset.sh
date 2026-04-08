@@ -4,9 +4,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-DATA_DIR="${REPO_ROOT}/dataset/Omni-MATH-final"
-INTERMEDIATE_DIR="${REPO_ROOT}/dataset/Omni-MATH-sentence-splitted"
-JSONL_DIR="${REPO_ROOT}/dataset/Omni-MATH-final-json"
+DATASET_ROOT="${DATASET_ROOT:-/opt/datasets}"
+DATA_DIR="${DATA_DIR:-${DATASET_ROOT}/Omni-MATH-final}"
+INTERMEDIATE_DIR="${INTERMEDIATE_DIR:-${DATASET_ROOT}/Omni-MATH-sentence-splitted}"
+JSONL_DIR="${JSONL_DIR:-${DATASET_ROOT}/Omni-MATH-final-json}"
 
 #MODEL_PATH=Qwen/Qwen2.5-0.5B-Instruct
 MODEL_PATH=Qwen/Qwen3-1.7b

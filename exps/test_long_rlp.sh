@@ -15,6 +15,7 @@ set -xeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+DATASET_ROOT=${DATASET_ROOT:-/opt/datasets}
 
 # activate the venv
 #echo "Activating verl environment..."
@@ -146,10 +147,9 @@ answer_overlong_penalty_factor=1.0
 exp_number=1
 SFT_MODEL=$(basename $MODEL_PATH)
 exp_name="${loss_mode}-epslow-${clip_ratio_low}-epshigh-${clip_ratio_high}-${SFT_MODEL}-RL-${exp_number}"
-#CKPTS_DIR=/rl/checkpoints/experimental/4b/${loss_mode}/${exp_name}
-DATA_DIR=${DATA_DIR:-"${REPO_ROOT}/exps/dataset/Omni-MATH-final"}
+DATA_DIR=${DATA_DIR:-"${DATASET_ROOT}/Omni-MATH-final"}
 DATA_PREP_SCRIPT="${REPO_ROOT}/exps/data_preprocessing/prepare_omni_math_dataset.sh"
-VAL_DATA_DIR=${VAL_DATA_DIR:-"${REPO_ROOT}/exps/dataset/gsm8k_boxed_val"}
+VAL_DATA_DIR=${VAL_DATA_DIR:-"${DATASET_ROOT}/gsm8k_boxed_val"}
 VAL_DATA_PREP_SCRIPT="${REPO_ROOT}/exps/scripts/prepare_gsm8k_validation.py"
 CKPTS_DIR=${CKPTS_DIR:-${REPO_ROOT}/ckpts/RL-Long-RLP_${exp_number}}
 WORKING_DIR=${WORKING_DIR:-"${REPO_ROOT}"}
