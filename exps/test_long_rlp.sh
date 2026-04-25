@@ -116,7 +116,8 @@ echo "one_batch_dynamic_memory_mb=${one_batch_dynamic_memory_mb}"
 echo "peak_memory_tbi_mb=${peak_memory_tbi_mb}"
 
 if command -v nvidia-smi >/dev/null 2>&1; then
-  detected_gpu_memory_mb="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -n 1 | tr -d ' ')"
+  mapfile -t gpu_memory_rows < <(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits)
+  detected_gpu_memory_mb="${gpu_memory_rows[0]// /}"
 else
   detected_gpu_memory_mb=80000
 fi
