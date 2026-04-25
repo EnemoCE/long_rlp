@@ -23,7 +23,8 @@ RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkg
     conda create -y -n verl python=3.12 && \
     conda run -n verl pip install -r requirements.txt && \
     conda run -n verl bash -lc 'USE_MEGATRON=0 bash scripts/install_vllm_sglang_mcore.sh' && \
-    conda run -n verl pip install "numpy<2.3" spacy ruamel.yaml trackio && \
+    conda run -n verl pip install "numpy<2.3" "huggingface-hub>=0.34.0,<1.0" spacy ruamel.yaml trackio && \
+    conda run -n verl pip install "huggingface-hub>=0.34.0,<1.0" && \
     conda run -n verl python -m spacy download en_core_web_sm
 
 RUN mv /verl/flash_attn-*.whl /tmp/ 2>/dev/null || true
