@@ -129,10 +129,19 @@ PER_RANK_MAX_MEMORY="${PER_RANK_MAX_MEMORY:-${detected_gpu_memory_mb}}"
 #activations memory example: one_batch_dynamic_memory_mb=10617
 #9/10 factor to protect from OOM - 88.7% utilization for H200 141 Gb, model Qwen3-1.7B, context=3072
 scale_factor=$(((PER_RANK_MAX_MEMORY*19/20-one_batch_static_memory_mb)/one_batch_dynamic_memory_mb))
-ppo_micro_batch_size_per_gpu=$((scale_factor)) # setup depending on your GPU memory
+if (( scale_factor < 1 )); then
+  scale_factor=1
+fi
 #distribute n_rollouts across all available GPUs and cap it with optimal value 16 from the paper
 n_resp_per_prompt=$(python -c "print(min($scale_factor * $DP,8))")
 ppo_mini_batch_size=$((15*n_resp_per_prompt)) # divisible by rollout.n for stable in-actor RLOO grouping
+ppo_micro_batch_size_per_gpu=1
+for ((candidate=scale_factor; candidate>=1; candidate--)); do
+  if (( ppo_mini_batch_size % candidate == 0 )); then
+    ppo_micro_batch_size_per_gpu=$candidate # largest safe value that fits memory and divides the mini-batch
+    break
+  fi
+done
 train_batch_size=$((2*ppo_mini_batch_size)) #should be divisble by ppo_mini_batch_size
 
 # scale_factor=1
