@@ -30,8 +30,7 @@ DATASET_ROOT=${DATASET_ROOT:-/opt/datasets}
 #export UCX_NET_DEVICES=mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1
 
 # Set how many GPUs we actually have on this node.
-#export GPUS_PER_NODE=8
-export GPUS_PER_NODE=2
+export GPUS_PER_NODE="${GPUS_PER_NODE:-8}"
 
 #NNODES=${SLURM_JOB_NUM_NODES}
 export NNODES=1
@@ -61,14 +60,14 @@ rollout_engine=vllm
 rollout_mode=async
 gpu_memory_utilization=0.8
 shuffle_dataset=false
-first_time_dataset_prep=true # prepare dataset
-first_time_val_dataset_prep=true # prepare GSM8K validation dataset
+first_time_dataset_prep="${first_time_dataset_prep:-false}" # set true to regenerate Omni-MATH dataset
+first_time_val_dataset_prep="${first_time_val_dataset_prep:-false}" # set true to regenerate GSM8K validation dataset
 
-test_freq=5
-save_freq=10
+test_freq="${test_freq:-5}"
+save_freq="${save_freq:-10}"
 total_epochs=10
-total_training_steps=500
-val_before_train=true
+total_training_steps="${total_training_steps:-500}"
+val_before_train="${val_before_train:-true}"
 
 use_kl_in_reward=false
 kl_coef=0.0
@@ -89,7 +88,7 @@ TP=1
 #always 1
 PP=1
 #num gpus available
-DP=2
+DP="${DP:-${GPUS_PER_NODE}}"
 
 #zero_stage=3 because fsdp is used by default as actor_rollout_ref.actor.fsdp_config.strategy: 'fsdp' and fsdp_config.reshard_after_forward=True
 ZERO_STAGE="${ZERO_STAGE:-3}"
@@ -116,7 +115,12 @@ echo "one_batch_static_memory_mb=${one_batch_static_memory_mb}"
 echo "one_batch_dynamic_memory_mb=${one_batch_dynamic_memory_mb}"
 echo "peak_memory_tbi_mb=${peak_memory_tbi_mb}"
 
-PER_RANK_MAX_MEMORY=80000
+if command -v nvidia-smi >/dev/null 2>&1; then
+  detected_gpu_memory_mb="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -n 1 | tr -d ' ')"
+else
+  detected_gpu_memory_mb=80000
+fi
+PER_RANK_MAX_MEMORY="${PER_RANK_MAX_MEMORY:-${detected_gpu_memory_mb}}"
 #manually check GPU available memory and update PER_RANK_MAX_MEMORY value accordingly
 #memory gpu footprint above was calculated for ppo_micro_batch_size_per_gpu=1 with 
 #context_len = max_prompt_length + max_response_length and model = MODEL_PATH and other params
