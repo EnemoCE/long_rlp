@@ -18,7 +18,9 @@ WORKDIR /verl
 COPY . /verl
 RUN mkdir -p /opt/datasets
 
-RUN conda create -y -n verl python=3.12 && \
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r && \
+    conda create -y -n verl python=3.12 && \
     conda run -n verl pip install -r requirements.txt && \
     conda run -n verl bash -lc 'USE_MEGATRON=0 bash scripts/install_vllm_sglang_mcore.sh' && \
     conda run -n verl pip install "numpy<2.3" spacy ruamel.yaml trackio && \
@@ -28,7 +30,7 @@ RUN mv /verl/flash_attn-*.whl /tmp/ 2>/dev/null || true
 
 ENV CONDA_DEFAULT_ENV=verl
 ENV PATH=${CONDA_DIR}/envs/verl/bin:${CONDA_DIR}/bin:${PATH}
-ENV PYTHONPATH=/verl:${PYTHONPATH}
+ENV PYTHONPATH=/verl
 ENV DATASET_ROOT=/opt/datasets
 
 WORKDIR /verl
