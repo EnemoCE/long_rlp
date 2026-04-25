@@ -61,7 +61,7 @@ rollout_engine=vllm
 rollout_mode=async
 gpu_memory_utilization=0.8
 shuffle_dataset=false
-first_time_dataset_prep=false # prepare dataset
+first_time_dataset_prep=true # prepare dataset
 first_time_val_dataset_prep=true # prepare GSM8K validation dataset
 
 test_freq=5
