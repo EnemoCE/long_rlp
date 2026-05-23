@@ -39,8 +39,8 @@ def main() -> None:
             answer_raw = example["answer"]
             solution = extract_solution(answer_raw)
             return {
-                # Route validation through upstream math-style boxed scoring.
-                "data_source": "HuggingFaceH4/MATH-500",
+                # Route validation through boxed math scoring while keeping GSM8K metric names honest.
+                "data_source": "openai/gsm8k_boxed",
                 "prompt": [{"role": "user", "content": question_raw + " " + instruction}],
                 "ability": "math",
                 "reward_model": {"style": "rule", "ground_truth": solution},

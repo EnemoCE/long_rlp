@@ -10,7 +10,7 @@ INTERMEDIATE_DIR="${INTERMEDIATE_DIR:-${DATASET_ROOT}/Omni-MATH-sentence-splitte
 JSONL_DIR="${JSONL_DIR:-${DATASET_ROOT}/Omni-MATH-final-json}"
 
 #MODEL_PATH=Qwen/Qwen2.5-0.5B-Instruct
-MODEL_PATH=Qwen/Qwen3-1.7b
+MODEL_PATH=Qwen/Qwen3-1.7B-Base
 
 mkdir -p "${DATA_DIR}" "${INTERMEDIATE_DIR}" "${JSONL_DIR}"
 

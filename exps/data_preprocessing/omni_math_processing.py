@@ -31,7 +31,7 @@ def build_dataset_element(problem: str, sol_prefix: str, instruction: str, targe
 
 def main():
     TAKE_N = int(os.environ.get("TAKE_N", "100"))
-    MODEL_ID = "Qwen/Qwen3-1.7b"
+    MODEL_ID = "Qwen/Qwen3-1.7B-Base"
     ap = argparse.ArgumentParser()
     ap.add_argument("--model_name", type=str, default=MODEL_ID)  # tokenizer source
     ap.add_argument("--out_dir", type=str, default='../dataset/Omni-MATH-final')
@@ -80,7 +80,8 @@ def main():
     
     instruction = (
         f"Complete the given text under ‘### Context’ by predicting next {prediction} exactly. "
-        "Please reason step by step, and put ONLY the final answer after '####'."
+        "Start your response with '<think>'. Write reasoning inside '<think>...</think>'. "
+        "After reasoning, write '####' and then ONLY the final answer."
     )
     
     

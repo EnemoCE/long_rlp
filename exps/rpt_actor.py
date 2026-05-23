@@ -102,6 +102,7 @@ class DataParallelRPTActor(DataParallelPPOActor):
         super().__init__(config=config, actor_module=actor_module, actor_optimizer=actor_optimizer)
         self.tokenizer = None
         self.end_think_ids: list[int] = []
+        self.start_think_ids: list[int] = []
         self.drop_think_text = "<think>\n\n</think>\n\n####"
         self.ema_tau = 0.999
         self.length_penalty = 0.0
@@ -126,6 +127,9 @@ class DataParallelRPTActor(DataParallelPPOActor):
         """Store RPT runtime state and initialize the EMA teacher copy."""
         self.tokenizer = tokenizer
         self.end_think_ids = list(end_think_ids)
+        self.start_think_ids = tokenizer.encode("<think>", add_special_tokens=False)
+        if len(self.start_think_ids) == 0:
+            raise ValueError("start-think text produced zero tokens")
         self.ema_tau = float(ema_tau)
         self.length_penalty = float(length_penalty)
         if drop_think_text:
@@ -546,6 +550,30 @@ class DataParallelRPTActor(DataParallelPPOActor):
         attn_full = mini_batch.batch["attention_mask"]
         resp_len = responses.size(1)
         response_attn = attn_full[:, -resp_len:]
+        valid_response_length = response_attn.sum(dim=-1).long()
+
+        start_think = torch.tensor(self.start_think_ids, device=responses.device, dtype=responses.dtype)
+        start_len = start_think.size(0)
+        if start_len > resp_len:
+            starts_with_think = torch.zeros(responses.size(0), device=responses.device, dtype=torch.bool)
+        else:
+            start_window = responses[:, :start_len]
+            start_attn = response_attn[:, :start_len].bool().all(dim=-1)
+            starts_with_think = (start_window == start_think.view(1, -1)).all(dim=-1) & start_attn
+
+        delimiter_found = torch.zeros(responses.size(0), device=responses.device, dtype=torch.bool)
+        end_len = len(self.end_think_ids)
+        if end_len > 0 and end_len <= resp_len:
+            end_think = torch.tensor(self.end_think_ids, device=responses.device, dtype=responses.dtype)
+            for j in range(resp_len - end_len + 1):
+                hit = (responses[:, j : j + end_len] == end_think.view(1, -1)).all(dim=-1)
+                # Ignore matches that start inside padding.
+                hit = hit & response_attn[:, j].bool()
+                delimiter_found = delimiter_found | hit
+        format_ok = starts_with_think & delimiter_found
+        mini_batch.batch["rpt_starts_with_think"] = starts_with_think.to(torch.float32)
+        mini_batch.batch["rpt_has_answer_delimiter"] = delimiter_found.to(torch.float32)
+        mini_batch.batch["rpt_format_ok"] = format_ok.to(torch.float32)
 
         thought_mask = make_thought_mask(
             responses=responses,
@@ -582,7 +610,6 @@ class DataParallelRPTActor(DataParallelPPOActor):
 
         reward = think_lp - ema_lp
         thought_len = thought_mask.sum(dim=-1).long()
-        valid_response_length = response_attn.sum(dim=-1).long()
         generated_answer_len = (valid_response_length - thought_len).clamp(min=0)
         gt_answer_len = torch.tensor(
             [len(token_ids) for token_ids in gt_token_ids],
@@ -601,6 +628,8 @@ class DataParallelRPTActor(DataParallelPPOActor):
             answer_scale = gt_answer_len.clamp(min=1).to(reward.dtype)
             answer_penalty = -(answer_exceed / answer_scale) * self.answer_overlong_penalty_factor
             reward = reward + answer_penalty
+
+        reward = torch.where(format_ok.to(reward.device), reward, torch.zeros_like(reward))
 
         reward_span_len = torch.minimum(valid_response_length, thought_len + gt_answer_len)
         pos = torch.arange(resp_len, device=responses.device)[None, :]
@@ -688,6 +717,17 @@ class DataParallelRPTActor(DataParallelPPOActor):
         for epoch_idx in range(self.config.ppo_epochs):
             for mini_batch in mini_batches:
                 mini_batch = self._compute_reward_lp_minibatch(mini_batch)
+                if epoch_idx == 0:
+                    append_to_dict(
+                        metrics,
+                        {
+                            "actor/rpt_starts_with_think": mini_batch.batch["rpt_starts_with_think"].mean().item(),
+                            "actor/rpt_has_answer_delimiter": mini_batch.batch[
+                                "rpt_has_answer_delimiter"
+                            ].mean().item(),
+                            "actor/rpt_format_ok": mini_batch.batch["rpt_format_ok"].mean().item(),
+                        },
+                    )
                 mini_batch = compute_advantage(
                     mini_batch,
                     adv_estimator=adv_estimator,
