@@ -29,6 +29,7 @@ from typing import Tuple
 
 import numpy as np
 import torch
+import torch.distributed as dist
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 from verl import DataProto
@@ -110,6 +111,10 @@ class DataParallelRPTActor(DataParallelPPOActor):
         self.overlong_buffer_len = 0
         self.thought_overlong_penalty_factor = 0.0
         self.answer_overlong_penalty_factor = 0.0
+        self.debug_train_generations = 0
+        self.debug_train_generation_batches = 0
+        self.debug_train_generation_max_chars = 1600
+        self._debug_train_generation_batches_printed = 0
         self.ema_module = None
 
     def setup_rpt(
@@ -123,6 +128,9 @@ class DataParallelRPTActor(DataParallelPPOActor):
         overlong_buffer_len: int = 0,
         thought_overlong_penalty_factor: float = 0.0,
         answer_overlong_penalty_factor: float = 0.0,
+        debug_train_generations: int = 0,
+        debug_train_generation_batches: int = 0,
+        debug_train_generation_max_chars: int = 1600,
     ):
         """Store RPT runtime state and initialize the EMA teacher copy."""
         self.tokenizer = tokenizer
@@ -138,6 +146,9 @@ class DataParallelRPTActor(DataParallelPPOActor):
         self.overlong_buffer_len = max(int(overlong_buffer_len), 0)
         self.thought_overlong_penalty_factor = float(thought_overlong_penalty_factor)
         self.answer_overlong_penalty_factor = float(answer_overlong_penalty_factor)
+        self.debug_train_generations = max(int(debug_train_generations), 0)
+        self.debug_train_generation_batches = max(int(debug_train_generation_batches), 0)
+        self.debug_train_generation_max_chars = max(int(debug_train_generation_max_chars), 200)
         self.init_ema_from_actor()
 
     def _get_ema_source_module(self):
@@ -296,6 +307,94 @@ class DataParallelRPTActor(DataParallelPPOActor):
                 token_ids = [eos_id]
             gt_token_ids.append(token_ids)
         return gt_token_ids
+
+    def _is_debug_print_rank(self) -> bool:
+        """Print rollout samples from one rank only to keep Ray logs readable."""
+        if dist.is_available() and dist.is_initialized():
+            return dist.get_rank() == 0
+        return True
+
+    def _clip_debug_text(self, text: str) -> str:
+        """Return a bounded text preview while preserving the response start."""
+        limit = self.debug_train_generation_max_chars
+        text = text.replace("\r", "\\r")
+        if len(text) <= limit:
+            return text
+        return text[:limit] + f"\n... <truncated {len(text) - limit} chars>"
+
+    def _prompt_debug_text(self, mini_batch: DataProto, row_idx: int) -> str:
+        """Best-effort prompt preview for rollout debugging."""
+        if "raw_prompt" in mini_batch.non_tensor_batch:
+            raw_prompt = mini_batch.non_tensor_batch["raw_prompt"][row_idx]
+            if isinstance(raw_prompt, (list, tuple)) and raw_prompt:
+                last_msg = raw_prompt[-1]
+                if isinstance(last_msg, dict):
+                    return str(last_msg.get("content", last_msg))
+            return str(raw_prompt)
+
+        if "full_prompts" in mini_batch.non_tensor_batch:
+            return str(mini_batch.non_tensor_batch["full_prompts"][row_idx])
+
+        input_ids = mini_batch.batch["input_ids"]
+        attention_mask = mini_batch.batch["attention_mask"]
+        resp_len = mini_batch.batch["responses"].size(1)
+        prompt_cut = input_ids.size(1) - resp_len
+        prompt_start = int((attention_mask[row_idx, :prompt_cut] == 0).sum().item())
+        prompt_ids = input_ids[row_idx, prompt_start:prompt_cut].detach().cpu().tolist()
+        return self.tokenizer.decode(prompt_ids, skip_special_tokens=False)
+
+    def _maybe_print_training_generations(
+        self,
+        mini_batch: DataProto,
+        response_attn: torch.Tensor,
+        reward: torch.Tensor,
+        starts_with_think: torch.Tensor,
+        delimiter_found: torch.Tensor,
+        format_ok: torch.Tensor,
+    ) -> None:
+        """Print a few raw training rollouts for protocol debugging."""
+        if self.debug_train_generations <= 0:
+            return
+        if self.debug_train_generation_batches and (
+            self._debug_train_generation_batches_printed >= self.debug_train_generation_batches
+        ):
+            return
+        if not self._is_debug_print_rank():
+            return
+
+        gt_texts = self._extract_ground_truth(mini_batch)
+        responses = mini_batch.batch["responses"]
+        valid_response_length = response_attn.sum(dim=-1).long()
+        num_rows = min(self.debug_train_generations, responses.size(0))
+
+        print(
+            "\n\n=== RPT TRAIN GENERATION DEBUG "
+            f"batch={self._debug_train_generation_batches_printed + 1} rows={num_rows} ===",
+            flush=True,
+        )
+        for i in range(num_rows):
+            valid_len = int(valid_response_length[i].item())
+            response_ids = responses[i, :valid_len].detach().cpu().tolist()
+            response_text = self.tokenizer.decode(response_ids, skip_special_tokens=False)
+            prompt_text = self._prompt_debug_text(mini_batch, i)
+            uid_values = mini_batch.non_tensor_batch.get("uid", ["<missing>"] * len(mini_batch))
+            uid = uid_values[i]
+            print(
+                "\n--- RPT TRAIN SAMPLE ---\n"
+                f"uid={uid}\n"
+                f"valid_response_length={valid_len}\n"
+                f"first_response_token_ids={response_ids[:24]}\n"
+                f"starts_with_think={bool(starts_with_think[i].item())} "
+                f"has_answer_delimiter={bool(delimiter_found[i].item())} "
+                f"format_ok={bool(format_ok[i].item())}\n"
+                f"scalar_reward_after_gate={float(reward[i].detach().cpu().item())}\n"
+                f"ground_truth_preview={self._clip_debug_text(gt_texts[i])}\n"
+                f"[prompt_preview]\n{self._clip_debug_text(prompt_text)}\n"
+                f"[response_preview]\n{self._clip_debug_text(response_text)}\n"
+                "--- END RPT TRAIN SAMPLE ---",
+                flush=True,
+            )
+        self._debug_train_generation_batches_printed += 1
 
     @torch.no_grad()
     def compute_gt_logprob(self, batch: DataProto, which: str = "actor") -> DataProto:
@@ -630,6 +729,15 @@ class DataParallelRPTActor(DataParallelPPOActor):
             reward = reward + answer_penalty
 
         reward = torch.where(format_ok.to(reward.device), reward, torch.zeros_like(reward))
+
+        self._maybe_print_training_generations(
+            mini_batch=mini_batch,
+            response_attn=response_attn,
+            reward=reward,
+            starts_with_think=starts_with_think,
+            delimiter_found=delimiter_found,
+            format_ok=format_ok,
+        )
 
         reward_span_len = torch.minimum(valid_response_length, thought_len + gt_answer_len)
         pos = torch.arange(resp_len, device=responses.device)[None, :]

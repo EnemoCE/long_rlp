@@ -87,6 +87,9 @@ class AsyncThoughtMaskActorRolloutRefWorker(AsyncActorRolloutRefWorker):
             length_penalty = float(rpt_cfg.get("length_penalty", 0.0))
             answer_overlong_penalty_factor = float(rpt_cfg.get("answer_overlong_penalty_factor", 0.0))
             drop_think_text = str(rpt_cfg.get("drop_think_text", "<think>\n\n</think>\n\n####"))
+            debug_train_generations = int(rpt_cfg.get("debug_train_generations", 0))
+            debug_train_generation_batches = int(rpt_cfg.get("debug_train_generation_batches", 0))
+            debug_train_generation_max_chars = int(rpt_cfg.get("debug_train_generation_max_chars", 1600))
             end_think_ids = self.tokenizer.encode("####", add_special_tokens=False)
 
             self.actor.setup_rpt(
@@ -99,6 +102,9 @@ class AsyncThoughtMaskActorRolloutRefWorker(AsyncActorRolloutRefWorker):
                 overlong_buffer_len=int(reward_cfg.get("len", 0)),
                 thought_overlong_penalty_factor=float(reward_cfg.get("penalty_factor", 0.0)),
                 answer_overlong_penalty_factor=answer_overlong_penalty_factor,
+                debug_train_generations=debug_train_generations,
+                debug_train_generation_batches=debug_train_generation_batches,
+                debug_train_generation_max_chars=debug_train_generation_max_chars,
             )
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
